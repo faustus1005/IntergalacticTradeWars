@@ -1867,6 +1867,8 @@ async function adminLoadPlayers() {
       <td>${p.online ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--text-dim)">○</span>'}</td>
       <td class="admin-actions">
         <button onclick="adminEditPlayer(${p.id}, '${escHtml(p.name)}')" class="btn-small">Edit</button>
+        <button onclick="adminEditShip(${p.id}, '${escHtml(p.name)}')" class="btn-small">Ship</button>
+        <button onclick="adminEditCompanions(${p.id}, '${escHtml(p.name)}')" class="btn-small">Crew</button>
       </td>
     </tr>`).join('') +
     '</tbody></table>';
@@ -1887,6 +1889,10 @@ function adminEditPlayer(playerId, playerName) {
       <input type="number" id="ep-sector" min="1" placeholder="Sector number">
       <label>Experience:</label>
       <input type="number" id="ep-xp" min="0">
+      <label>Kills:</label>
+      <input type="number" id="ep-kills" min="0">
+      <label>Deaths:</label>
+      <input type="number" id="ep-deaths" min="0">
     </div>`,
     [
       { text: 'Save', primary: true, action: async () => {
@@ -1897,12 +1903,16 @@ function adminEditPlayer(playerId, playerName) {
         const maxturns = document.getElementById('ep-maxturns').value;
         const sector = document.getElementById('ep-sector').value;
         const xp = document.getElementById('ep-xp').value;
+        const kills = document.getElementById('ep-kills').value;
+        const deaths = document.getElementById('ep-deaths').value;
         if (credits !== '') body.credits = credits;
         if (alignment !== '') body.alignment = alignment;
         if (turns !== '') body.turns_remaining = turns;
         if (maxturns !== '') body.max_turns = maxturns;
         if (sector !== '') body.current_sector = sector;
         if (xp !== '') body.experience = xp;
+        if (kills !== '') body.kills = kills;
+        if (deaths !== '') body.deaths = deaths;
         if (!Object.keys(body).length) { closeModal(); return; }
         const result = await adminFetch(`/api/admin/players/${playerId}`, { method: 'PUT', body: JSON.stringify(body) });
         closeModal();
@@ -1912,6 +1922,154 @@ function adminEditPlayer(playerId, playerName) {
       { text: 'Cancel', action: closeModal }
     ]
   );
+}
+
+async function adminEditShip(playerId, playerName) {
+  const data = await adminFetch(`/api/admin/players/${playerId}/ship`);
+  if (!data.ship) {
+    showModal('Edit Ship: ' + playerName,
+      `<p class="info-text">This player has no active ship.</p>`,
+      [{ text: 'Close', action: closeModal }]
+    );
+    return;
+  }
+  const { ship, shipTypes } = data;
+  const typeOptions = shipTypes.map(st =>
+    `<option value="${st.id}" ${st.id === ship.type_id ? 'selected' : ''}>${escHtml(st.name)}</option>`
+  ).join('');
+  showModal('Edit Ship: ' + playerName,
+    `<div class="admin-edit-form">
+      <label>Ship Type:</label>
+      <select id="es-type">${typeOptions}</select>
+      <label>Ship Name:</label>
+      <input type="text" id="es-name" value="${escHtml(ship.name)}" maxlength="50">
+      <label>Fighters (current: ${ship.fighters}):</label>
+      <input type="number" id="es-fighters" value="${ship.fighters}" min="0">
+      <label>Mines (current: ${ship.mines}):</label>
+      <input type="number" id="es-mines" value="${ship.mines}" min="0">
+      <label>Shields (current: ${ship.shields}):</label>
+      <input type="number" id="es-shields" value="${ship.shields}" min="0">
+      <label style="margin-top:10px;color:var(--text-dim)">Cargo Hold</label>
+      <label>Ore:</label>
+      <input type="number" id="es-ore" value="${ship.ore}" min="0">
+      <label>Organics:</label>
+      <input type="number" id="es-organics" value="${ship.organics}" min="0">
+      <label>Equipment:</label>
+      <input type="number" id="es-equipment" value="${ship.equipment}" min="0">
+      <label>Colonists:</label>
+      <input type="number" id="es-colonists" value="${ship.colonists}" min="0">
+    </div>`,
+    [
+      { text: 'Save', primary: true, action: async () => {
+        const body = {
+          type_id: document.getElementById('es-type').value,
+          name: document.getElementById('es-name').value,
+          fighters: document.getElementById('es-fighters').value,
+          mines: document.getElementById('es-mines').value,
+          shields: document.getElementById('es-shields').value,
+          ore: document.getElementById('es-ore').value,
+          organics: document.getElementById('es-organics').value,
+          equipment: document.getElementById('es-equipment').value,
+          colonists: document.getElementById('es-colonists').value,
+        };
+        const result = await adminFetch(`/api/admin/players/${playerId}/ship`, { method: 'PUT', body: JSON.stringify(body) });
+        closeModal();
+        if (result.success) { log('Ship updated', 'success'); adminLoadPlayers(); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminEditCompanions(playerId, playerName) {
+  const data = await adminFetch(`/api/admin/players/${playerId}/companions`);
+  const { companions, allTypes } = data;
+
+  function renderCompanionsList() {
+    if (!companions.length) return '<p class="info-text">No companions hired.</p>';
+    return companions.map(c => `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px;background:var(--bg-panel);border-radius:4px;">
+        <div style="flex:1">
+          <strong>${escHtml(c.type_name)}</strong> <span style="color:var(--text-dim)">(${c.race})</span>
+          ${c.nickname ? `<em style="color:var(--yellow)"> "${escHtml(c.nickname)}"</em>` : ''}
+          <br><span style="font-size:0.85em">Affinity: ${c.affinity}/100 &nbsp; Mood: ${c.mood}/100</span>
+        </div>
+        <button onclick="adminCompanionEdit(${playerId}, ${c.companion_type_id}, '${escHtml(c.type_name)}', ${c.affinity}, ${c.mood}, '${escHtml(c.nickname || '')}')" class="btn-small">Edit</button>
+        <button onclick="adminCompanionRemove(${playerId}, ${c.companion_type_id}, '${escHtml(c.type_name)}', '${escHtml(playerName)}')" class="btn-small btn-danger">Remove</button>
+      </div>`).join('');
+  }
+
+  const hiredIds = companions.map(c => c.companion_type_id);
+  const available = allTypes.filter(t => !hiredIds.includes(t.id));
+  const addOptions = available.length
+    ? `<select id="ec-add-type">${available.map(t => `<option value="${t.id}">${escHtml(t.name)} (${t.race}) — ${formatNumber(t.hire_cost)} cr</option>`).join('')}</select>
+       <button class="btn-small" style="margin-top:6px" onclick="adminCompanionAdd(${playerId}, '${escHtml(playerName)}')">Add Companion</button>`
+    : '<p class="info-text">All companion slots full or all types hired.</p>';
+
+  showModal('Crew: ' + playerName,
+    `<div class="admin-edit-form">
+      <label style="color:var(--text-dim)">Current Companions (${companions.length}/3)</label>
+      <div id="ec-companions-list">${renderCompanionsList()}</div>
+      ${companions.length < 3 && available.length ? `
+        <label style="margin-top:12px">Add Companion:</label>
+        ${addOptions}` : ''}
+    </div>`,
+    [{ text: 'Close', action: closeModal }]
+  );
+}
+
+async function adminCompanionEdit(playerId, companionTypeId, typeName, currentAffinity, currentMood, currentNickname) {
+  showModal('Edit Companion: ' + typeName,
+    `<div class="admin-edit-form">
+      <label>Nickname (leave blank to clear):</label>
+      <input type="text" id="ece-nickname" value="${escHtml(currentNickname)}" maxlength="50" placeholder="Optional nickname">
+      <label>Affinity (0-100):</label>
+      <input type="number" id="ece-affinity" value="${currentAffinity}" min="0" max="100">
+      <label>Mood (0-100):</label>
+      <input type="number" id="ece-mood" value="${currentMood}" min="0" max="100">
+    </div>`,
+    [
+      { text: 'Save', primary: true, action: async () => {
+        const body = {
+          nickname: document.getElementById('ece-nickname').value,
+          affinity: document.getElementById('ece-affinity').value,
+          mood: document.getElementById('ece-mood').value,
+        };
+        const result = await adminFetch(`/api/admin/players/${playerId}/companions/${companionTypeId}`, { method: 'PUT', body: JSON.stringify(body) });
+        closeModal();
+        if (result.success) { log('Companion updated', 'success'); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminCompanionRemove(playerId, companionTypeId, typeName, playerName) {
+  showModal('Remove Companion',
+    `<p>Remove <strong>${escHtml(typeName)}</strong> from <strong>${escHtml(playerName)}</strong>'s crew?</p>`,
+    [
+      { text: 'Remove', action: async () => {
+        const result = await adminFetch(`/api/admin/players/${playerId}/companions/${companionTypeId}`, { method: 'DELETE' });
+        closeModal();
+        if (result.success) { log('Companion removed', 'warning'); adminEditCompanions(playerId, playerName); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminCompanionAdd(playerId, playerName) {
+  const typeId = document.getElementById('ec-add-type').value;
+  const result = await adminFetch(`/api/admin/players/${playerId}/companions`, {
+    method: 'POST',
+    body: JSON.stringify({ companion_type_id: parseInt(typeId), affinity: 50, mood: 50 })
+  });
+  closeModal();
+  if (result.success) { log('Companion added', 'success'); adminEditCompanions(playerId, playerName); }
+  else log('Error: ' + (result.error || 'Unknown error'), 'danger');
 }
 
 async function adminLoadCorps() {
