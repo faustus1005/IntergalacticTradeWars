@@ -292,6 +292,57 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_market_orders_commodity ON market_orders(commodity, order_type);
     CREATE INDEX IF NOT EXISTS idx_npcs_sector ON npcs(sector_id);
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_id, read);
+
+    CREATE TABLE IF NOT EXISTS upgrade_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      category TEXT NOT NULL,
+      description TEXT,
+      stat_bonus TEXT NOT NULL,
+      bonus_value REAL NOT NULL,
+      max_stacks INTEGER DEFAULT 1,
+      base_cost INTEGER NOT NULL,
+      equipment_cost INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS ship_upgrades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ship_id INTEGER NOT NULL,
+      upgrade_type_id INTEGER NOT NULL,
+      stacks INTEGER DEFAULT 1,
+      installed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ship_id) REFERENCES ships(id),
+      FOREIGN KEY (upgrade_type_id) REFERENCES upgrade_types(id),
+      UNIQUE(ship_id, upgrade_type_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS companion_types (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      race TEXT NOT NULL,
+      gender TEXT NOT NULL,
+      description TEXT,
+      personality TEXT,
+      hire_cost INTEGER NOT NULL,
+      home_sector INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS companions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      player_id INTEGER NOT NULL,
+      companion_type_id INTEGER NOT NULL,
+      nickname TEXT,
+      affinity INTEGER DEFAULT 50,
+      mood INTEGER DEFAULT 50,
+      hired_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_interaction DATETIME,
+      FOREIGN KEY (player_id) REFERENCES players(id),
+      FOREIGN KEY (companion_type_id) REFERENCES companion_types(id),
+      UNIQUE(player_id, companion_type_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ship_upgrades_ship ON ship_upgrades(ship_id);
+    CREATE INDEX IF NOT EXISTS idx_companions_player ON companions(player_id);
   `);
 }
 
@@ -360,4 +411,75 @@ function seedSkills() {
   insertAll();
 }
 
-module.exports = { getDb, seedShipTypes, seedSkills };
+function seedUpgradeTypes() {
+  const d = getDb();
+  const count = d.prepare('SELECT COUNT(*) as c FROM upgrade_types').get().c;
+  if (count > 0) return;
+
+  const upgrades = [
+    // Engines
+    { name: 'Ion Thrusters Mk I', category: 'engines', desc: 'Basic engine upgrade. Reduces turn cost by 10%.', stat: 'turn_cost', bonus: 0.10, stacks: 1, cost: 8000, eqCost: 20 },
+    { name: 'Ion Thrusters Mk II', category: 'engines', desc: 'Advanced engines. Reduces turn cost by 20%.', stat: 'turn_cost', bonus: 0.20, stacks: 1, cost: 25000, eqCost: 50 },
+    { name: 'Quantum Drive', category: 'engines', desc: 'Cutting-edge propulsion. Reduces turn cost by 35%.', stat: 'turn_cost', bonus: 0.35, stacks: 1, cost: 75000, eqCost: 100 },
+    // Weapons
+    { name: 'Phaser Array', category: 'weapons', desc: 'Adds +5% combat odds.', stat: 'combat_odds', bonus: 5, stacks: 1, cost: 10000, eqCost: 25 },
+    { name: 'Plasma Cannons', category: 'weapons', desc: 'Adds +10% combat odds.', stat: 'combat_odds', bonus: 10, stacks: 1, cost: 35000, eqCost: 60 },
+    { name: 'Quantum Torpedoes', category: 'weapons', desc: 'Adds +15% combat odds and enables photon capability.', stat: 'combat_odds', bonus: 15, stacks: 1, cost: 80000, eqCost: 120 },
+    // Shields
+    { name: 'Reinforced Plating', category: 'shields', desc: 'Adds +50 max shields.', stat: 'max_shields', bonus: 50, stacks: 3, cost: 5000, eqCost: 15 },
+    { name: 'Deflector Array', category: 'shields', desc: 'Adds +150 max shields.', stat: 'max_shields', bonus: 150, stacks: 1, cost: 30000, eqCost: 50 },
+    { name: 'Adaptive Shield Matrix', category: 'shields', desc: 'Adds +300 max shields.', stat: 'max_shields', bonus: 300, stacks: 1, cost: 100000, eqCost: 100 },
+    // Scanners
+    { name: 'Long-Range Sensors', category: 'scanners', desc: 'Adds +1 scanner range.', stat: 'scanner_range', bonus: 1, stacks: 2, cost: 12000, eqCost: 30 },
+    { name: 'Deep Space Array', category: 'scanners', desc: 'Adds +3 scanner range.', stat: 'scanner_range', bonus: 3, stacks: 1, cost: 50000, eqCost: 80 },
+    // Cargo
+    { name: 'Cargo Expander', category: 'cargo', desc: 'Adds +25 cargo capacity.', stat: 'cargo_capacity', bonus: 25, stacks: 3, cost: 6000, eqCost: 15 },
+    { name: 'Compression Bay', category: 'cargo', desc: 'Adds +75 cargo capacity.', stat: 'cargo_capacity', bonus: 75, stacks: 1, cost: 25000, eqCost: 40 },
+    // Special
+    { name: 'Cloaking Device', category: 'special', desc: 'Reduces chance of mine/fighter detection by 30%.', stat: 'stealth', bonus: 0.30, stacks: 1, cost: 120000, eqCost: 150 },
+    { name: 'Emergency Warp Core', category: 'special', desc: 'Auto-escape on fatal damage (single use, then must re-buy).', stat: 'auto_escape', bonus: 1, stacks: 1, cost: 50000, eqCost: 80 },
+  ];
+
+  const stmt = d.prepare(`INSERT INTO upgrade_types (name, category, description, stat_bonus, bonus_value, max_stacks, base_cost, equipment_cost)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+
+  const insertAll = d.transaction(() => {
+    for (const u of upgrades) {
+      stmt.run(u.name, u.category, u.desc, u.stat, u.bonus, u.stacks, u.cost, u.eqCost);
+    }
+  });
+  insertAll();
+}
+
+function seedCompanionTypes() {
+  const d = getDb();
+  const count = d.prepare('SELECT COUNT(*) as c FROM companion_types').get().c;
+  if (count > 0) return;
+
+  const companions = [
+    // Female companions
+    { name: 'Lyra Voss', race: 'Human', gender: 'female', desc: 'A sharp-witted ex-navigator who traded military life for the stars. Her knowledge of warp routes is unmatched.', personality: 'witty', cost: 5000 },
+    { name: "Zh'kira", race: 'Zelthari', gender: 'female', desc: 'A blue-skinned telepathic diplomat from the Zelthari homeworld. She speaks softly but sees through every lie.', personality: 'serene', cost: 8000 },
+    { name: 'Nyx Shadowpaw', race: 'Krynnari', gender: 'female', desc: 'A fierce feline bounty hunter who retired after one too many close calls. Still keeps her claws sharp.', personality: 'fierce', cost: 7000 },
+    { name: 'Ssirath', race: 'Vossk', gender: 'female', desc: 'A reptilian merchant princess exiled from the Vossk trading guilds. She can appraise anything at a glance.', personality: 'cunning', cost: 6000 },
+    { name: 'Aelindra', race: 'Aelari', gender: 'female', desc: 'A luminous, ethereal being who communicates through song. Her star-singing calms even the most troubled minds.', personality: 'ethereal', cost: 10000 },
+    // Male companions
+    { name: 'Rex Harlan', race: 'Human', gender: 'male', desc: 'A grizzled retired Commander who has seen every corner of the galaxy. Full of war stories and hard-earned wisdom.', personality: 'gruff', cost: 5000 },
+    { name: "Thal'zen", race: 'Zelthari', gender: 'male', desc: 'A psychic scholar obsessed with mapping the consciousness of deep space. Oddly calming presence.', personality: 'contemplative', cost: 8000 },
+    { name: "Grr'mak Ironclaw", race: 'Krynnari', gender: 'male', desc: 'A massive feline weapons master who lives for the thrill of combat. Surprisingly gentle off the battlefield.', personality: 'boisterous', cost: 7000 },
+    { name: 'Vosskrath', race: 'Vossk', gender: 'male', desc: 'A smooth-scaled smuggler pilot who knows every hidden route and black market in the sector.', personality: 'sly', cost: 6000 },
+    { name: 'Luminex', race: 'Aelari', gender: 'male', desc: 'A wandering mystic whose body pulses with starlight. He speaks in riddles but his advice is always prescient.', personality: 'mystical', cost: 10000 },
+  ];
+
+  const stmt = d.prepare(`INSERT INTO companion_types (name, race, gender, description, personality, hire_cost)
+    VALUES (?, ?, ?, ?, ?, ?)`);
+
+  const insertAll = d.transaction(() => {
+    for (const c of companions) {
+      stmt.run(c.name, c.race, c.gender, c.desc, c.personality, c.cost);
+    }
+  });
+  insertAll();
+}
+
+module.exports = { getDb, seedShipTypes, seedSkills, seedUpgradeTypes, seedCompanionTypes };

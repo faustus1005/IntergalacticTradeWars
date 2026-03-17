@@ -1,4 +1,4 @@
-import { getDb } from './database.js';
+// Game logic module
 
 // ============================================================
 // TRADING
@@ -1279,7 +1279,375 @@ function getLeaderboard(db) {
 // EXPORTS
 // ============================================================
 
-export {
+// ============================================================
+// SHIP CUSTOMIZATION
+// ============================================================
+
+function renameShip(db, playerId, newName) {
+  if (!newName || typeof newName !== 'string') return { success: false, message: 'Invalid ship name.' };
+  newName = newName.trim();
+  if (newName.length < 1 || newName.length > 30) return { success: false, message: 'Ship name must be 1-30 characters.' };
+
+  const ship = db.prepare('SELECT id FROM ships WHERE player_id = ? AND active = 1').get(playerId);
+  if (!ship) return { success: false, message: 'No active ship.' };
+
+  db.prepare('UPDATE ships SET name = ? WHERE id = ?').run(newName, ship.id);
+  return { success: true, message: `Ship renamed to "${newName}".` };
+}
+
+function getUpgradeTypes(db) {
+  return db.prepare('SELECT * FROM upgrade_types ORDER BY category, base_cost').all();
+}
+
+function getShipUpgrades(db, playerId) {
+  const ship = db.prepare('SELECT id FROM ships WHERE player_id = ? AND active = 1').get(playerId);
+  if (!ship) return [];
+  return db.prepare(`SELECT su.*, ut.name, ut.category, ut.description, ut.stat_bonus, ut.bonus_value, ut.max_stacks, ut.base_cost, ut.equipment_cost
+    FROM ship_upgrades su JOIN upgrade_types ut ON su.upgrade_type_id = ut.id WHERE su.ship_id = ?`).all(ship.id);
+}
+
+function installUpgrade(db, playerId, upgradeTypeId) {
+  const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+  if (!player) return { success: false, message: 'Player not found.' };
+
+  const sector = db.prepare('SELECT has_stardock FROM sectors WHERE id = ?').get(player.current_sector);
+  if (!sector || !sector.has_stardock) return { success: false, message: 'Must be at a StarDock to install upgrades.' };
+
+  const ship = db.prepare('SELECT * FROM ships WHERE player_id = ? AND active = 1').get(playerId);
+  if (!ship) return { success: false, message: 'No active ship.' };
+
+  const upgrade = db.prepare('SELECT * FROM upgrade_types WHERE id = ?').get(upgradeTypeId);
+  if (!upgrade) return { success: false, message: 'Unknown upgrade type.' };
+
+  if (player.credits < upgrade.base_cost) return { success: false, message: `Need ${upgrade.base_cost} credits (have ${player.credits}).` };
+  if (ship.equipment < upgrade.equipment_cost) return { success: false, message: `Need ${upgrade.equipment_cost} equipment (have ${ship.equipment}).` };
+
+  const existing = db.prepare('SELECT * FROM ship_upgrades WHERE ship_id = ? AND upgrade_type_id = ?').get(ship.id, upgradeTypeId);
+
+  if (existing) {
+    if (existing.stacks >= upgrade.max_stacks) return { success: false, message: `Maximum stacks (${upgrade.max_stacks}) already installed.` };
+
+    // Check for conflicting upgrades in same category (higher tier replaces lower within non-stackable)
+    const exec = db.transaction(() => {
+      db.prepare('UPDATE players SET credits = credits - ? WHERE id = ?').run(upgrade.base_cost, playerId);
+      db.prepare('UPDATE ships SET equipment = equipment - ? WHERE id = ?').run(upgrade.equipment_cost, ship.id);
+      db.prepare('UPDATE ship_upgrades SET stacks = stacks + 1 WHERE id = ?').run(existing.id);
+    });
+    exec();
+  } else {
+    const exec = db.transaction(() => {
+      db.prepare('UPDATE players SET credits = credits - ? WHERE id = ?').run(upgrade.base_cost, playerId);
+      db.prepare('UPDATE ships SET equipment = equipment - ? WHERE id = ?').run(upgrade.equipment_cost, ship.id);
+      db.prepare('INSERT INTO ship_upgrades (ship_id, upgrade_type_id, stacks) VALUES (?, ?, 1)').run(ship.id, upgradeTypeId);
+    });
+    exec();
+  }
+
+  // Apply shield upgrades immediately
+  if (upgrade.stat_bonus === 'max_shields') {
+    const totalBonus = upgrade.bonus_value;
+    db.prepare('UPDATE ships SET max_shields = max_shields + ?, shields = shields + ? WHERE id = ?').run(totalBonus, totalBonus, ship.id);
+  }
+
+  return { success: true, message: `Installed ${upgrade.name}! (-${upgrade.base_cost} credits, -${upgrade.equipment_cost} equipment)` };
+}
+
+function removeUpgrade(db, playerId, upgradeTypeId) {
+  const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+  if (!player) return { success: false, message: 'Player not found.' };
+
+  const sector = db.prepare('SELECT has_stardock FROM sectors WHERE id = ?').get(player.current_sector);
+  if (!sector || !sector.has_stardock) return { success: false, message: 'Must be at a StarDock to remove upgrades.' };
+
+  const ship = db.prepare('SELECT * FROM ships WHERE player_id = ? AND active = 1').get(playerId);
+  if (!ship) return { success: false, message: 'No active ship.' };
+
+  const existing = db.prepare(`SELECT su.*, ut.name, ut.stat_bonus, ut.bonus_value, ut.base_cost
+    FROM ship_upgrades su JOIN upgrade_types ut ON su.upgrade_type_id = ut.id
+    WHERE su.ship_id = ? AND su.upgrade_type_id = ?`).get(ship.id, upgradeTypeId);
+  if (!existing) return { success: false, message: 'Upgrade not installed.' };
+
+  const refund = Math.floor(existing.base_cost * existing.stacks * 0.4);
+
+  const exec = db.transaction(() => {
+    // Remove shield bonus if applicable
+    if (existing.stat_bonus === 'max_shields') {
+      const totalLoss = existing.bonus_value * existing.stacks;
+      db.prepare('UPDATE ships SET max_shields = MAX(1, max_shields - ?), shields = MIN(shields, MAX(1, max_shields - ?)) WHERE id = ?').run(totalLoss, totalLoss, ship.id);
+    }
+    db.prepare('DELETE FROM ship_upgrades WHERE id = ?').run(existing.id);
+    db.prepare('UPDATE players SET credits = credits + ? WHERE id = ?').run(refund, playerId);
+  });
+  exec();
+
+  return { success: true, message: `Removed ${existing.name}. Refunded ${refund} credits (40%).` };
+}
+
+function getShipUpgradeBonus(db, shipId, statName) {
+  const rows = db.prepare(`SELECT ut.bonus_value, su.stacks FROM ship_upgrades su
+    JOIN upgrade_types ut ON su.upgrade_type_id = ut.id
+    WHERE su.ship_id = ? AND ut.stat_bonus = ?`).all(shipId, statName);
+  let total = 0;
+  for (const r of rows) total += r.bonus_value * r.stacks;
+  return total;
+}
+
+// ============================================================
+// CAPTAIN'S QUARTERS
+// ============================================================
+
+function getCompanionTypes(db) {
+  return db.prepare('SELECT * FROM companion_types ORDER BY gender, race').all();
+}
+
+function getPlayerCompanions(db, playerId) {
+  return db.prepare(`SELECT c.*, ct.name, ct.race, ct.gender, ct.description, ct.personality, ct.hire_cost
+    FROM companions c JOIN companion_types ct ON c.companion_type_id = ct.id
+    WHERE c.player_id = ? ORDER BY c.hired_at`).all(playerId);
+}
+
+function hireCompanion(db, playerId, companionTypeId) {
+  const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+  if (!player) return { success: false, message: 'Player not found.' };
+
+  const compType = db.prepare('SELECT * FROM companion_types WHERE id = ?').get(companionTypeId);
+  if (!compType) return { success: false, message: 'Unknown companion.' };
+
+  const existing = db.prepare('SELECT id FROM companions WHERE player_id = ? AND companion_type_id = ?').get(playerId, companionTypeId);
+  if (existing) return { success: false, message: `${compType.name} is already aboard your ship.` };
+
+  const count = db.prepare('SELECT COUNT(*) as c FROM companions WHERE player_id = ?').get(playerId).c;
+  if (count >= 3) return { success: false, message: 'Maximum 3 companions. Dismiss someone first.' };
+
+  if (player.credits < compType.hire_cost) return { success: false, message: `Need ${compType.hire_cost} credits (have ${player.credits}).` };
+
+  const exec = db.transaction(() => {
+    db.prepare('UPDATE players SET credits = credits - ? WHERE id = ?').run(compType.hire_cost, playerId);
+    db.prepare('INSERT INTO companions (player_id, companion_type_id, affinity, mood) VALUES (?, ?, 50, 50)').run(playerId, companionTypeId);
+  });
+  exec();
+
+  return { success: true, message: `${compType.name} has joined your crew! Welcome aboard.` };
+}
+
+function dismissCompanion(db, playerId, companionTypeId) {
+  const comp = db.prepare(`SELECT c.id, ct.name FROM companions c JOIN companion_types ct ON c.companion_type_id = ct.id
+    WHERE c.player_id = ? AND c.companion_type_id = ?`).get(playerId, companionTypeId);
+  if (!comp) return { success: false, message: 'Companion not found.' };
+
+  db.prepare('DELETE FROM companions WHERE id = ?').run(comp.id);
+  return { success: true, message: `${comp.name} has left your crew. Farewell.` };
+}
+
+function interactWithCompanion(db, playerId, companionTypeId, action) {
+  const comp = db.prepare(`SELECT c.*, ct.name, ct.race, ct.personality, ct.gender
+    FROM companions c JOIN companion_types ct ON c.companion_type_id = ct.id
+    WHERE c.player_id = ? AND c.companion_type_id = ?`).get(playerId, companionTypeId);
+  if (!comp) return { success: false, message: 'Companion not found.' };
+
+  const validActions = ['talk', 'drink', 'homeworld', 'game', 'stargaze'];
+  if (!validActions.includes(action)) return { success: false, message: 'Unknown interaction.' };
+
+  // Cooldown: 30 seconds between interactions
+  if (comp.last_interaction) {
+    const lastTime = new Date(comp.last_interaction).getTime();
+    const now = Date.now();
+    if (now - lastTime < 30000) {
+      const wait = Math.ceil((30000 - (now - lastTime)) / 1000);
+      return { success: false, message: `${comp.name} needs a moment. Try again in ${wait}s.` };
+    }
+  }
+
+  // Generate response based on personality, action, and mood
+  const responses = getCompanionResponse(comp, action);
+  const affinityDelta = responses.affinityDelta;
+  const moodDelta = responses.moodDelta;
+
+  const newAffinity = Math.max(0, Math.min(100, comp.affinity + affinityDelta));
+  const newMood = Math.max(0, Math.min(100, comp.mood + moodDelta));
+
+  db.prepare('UPDATE companions SET affinity = ?, mood = ?, last_interaction = CURRENT_TIMESTAMP WHERE id = ?')
+    .run(newAffinity, newMood, comp.id);
+
+  return {
+    success: true,
+    message: responses.text,
+    companion: comp.name,
+    affinity: newAffinity,
+    mood: newMood,
+    affinityChange: affinityDelta,
+    moodChange: moodDelta
+  };
+}
+
+function getCompanionResponse(comp, action) {
+  const p = comp.personality;
+  const name = comp.name;
+  const race = comp.race;
+  const highAffinity = comp.affinity >= 70;
+  const lowMood = comp.mood < 30;
+
+  const dialogues = {
+    talk: {
+      witty: [
+        `${name} leans back. "You know, I once navigated through a triple-nebula storm with nothing but a broken compass and sheer stubbornness."`,
+        `${name} smirks. "Most captains ask for my opinion. The smart ones actually listen."`,
+        `${name} chuckles. "If I had a credit for every close call we've had, I'd buy my own StarDock."`
+      ],
+      serene: [
+        `${name}'s antennae glow softly. "I sense... contentment in you, Captain. The stars are kind today."`,
+        `${name} closes her eyes. "The telepathic currents are calm. A good omen for trade."`,
+        `${name} smiles gently. "On Zelthara, we say the void between stars holds the truest conversations."`
+      ],
+      fierce: [
+        `${name} flexes her claws absently. "I miss the hunt sometimes. But this life has its own thrills."`,
+        `${name}'s tail swishes. "My last bounty tried to bribe me. I told him my claws don't accept credits."`,
+        `${name} purrs low. "Don't mistake my calm for softness, Captain. I'm always ready."`
+      ],
+      cunning: [
+        `${name}'s forked tongue flickers. "The market pressures in this sector are... exploitable."`,
+        `${name} examines her scales. "Among the Vossk, a good deal is worth more than a hundred victories."`,
+        `${name} hisses softly. "Trust is a commodity, Captain. I invest mine carefully."`
+      ],
+      ethereal: [
+        `${name} hums a melody that makes the lights flicker. "The stars sang of your arrival long ago, Captain."`,
+        `${name}'s form shimmers. "Each photon carries a story. I am simply... a good listener."`,
+        `${name} glows warmly. "In the space between breaths, the universe whispers its secrets."`
+      ],
+      gruff: [
+        `${name} scratches his stubble. "Back in the Federation fleet, we didn't have these fancy warp drives. Had to do things the hard way."`,
+        `${name} grunts. "I've seen empires rise and fall, kid. The only constant is the void."`,
+        `${name} pours himself a drink. "You're not half bad, Captain. Don't let it go to your head."`
+      ],
+      contemplative: [
+        `${name}'s eyes glow blue. "I was mapping a psychic anomaly in Sector 7 when I realized... the anomaly was mapping me."`,
+        `${name} steeples his fingers. "Consciousness is the universe's way of experiencing itself. We are all explorers."`,
+        `${name} tilts his head. "Your neural patterns are fascinating today, Captain. More complex than usual."`
+      ],
+      boisterous: [
+        `${name} slams a fist on the table. "HA! Did I ever tell you about the time I wrestled a Ferrengi bare-handed?"`,
+        `${name} roars with laughter. "In my clan, a warrior is measured by his scars! See this one? Three-headed serpent."`,
+        `${name} grins, showing his fangs. "You fight well for a captain. Perhaps I'll make a warrior of you yet!"`
+      ],
+      sly: [
+        `${name}'s scales shift color. "I know a route that avoids every Federation patrol. Interested?"`,
+        `${name} chuckles low. "The Vossk saying goes: 'The fastest ship is the one no one sees coming.'"`,
+        `${name} flicks his tail. "Information, Captain, is the most valuable cargo in any hold."`
+      ],
+      mystical: [
+        `${name}'s body pulses with starlight. "The cosmic winds shift. A change approaches your destiny."`,
+        `${name} speaks softly. "Do you ever wonder if the wormholes dream? I believe they do."`,
+        `${name} traces glowing patterns in the air. "All paths converge eventually. Yours is... interesting."`
+      ]
+    },
+    drink: {
+      witty: [`${name} raises a glass. "To bad decisions and great stories!"`, `${name} sips elegantly. "This Zelthari brandy almost makes space bearable."`],
+      serene: [`${name} cradles the warm cup. "On Zelthara, we share tea before all important decisions."`, `${name} takes a delicate sip. "The warmth reminds me of home."`],
+      fierce: [`${name} downs it in one gulp. "Krynnari bloodwine. Now THAT was a drink. This is... adequate."`, `${name} grins. "Drinks are better after a good fight. We should arrange one."`],
+      cunning: [`${name} swirls the drink. "A fine vintage. I could sell this for triple in the right sector."`, `${name} sips cautiously. "Never drink what you haven't inspected first."`],
+      ethereal: [`${name} absorbs the liquid through her luminous skin. "How... interesting. Your species drinks so differently."`, `${name} hums. "The molecular composition sings."`],
+      gruff: [`${name} raises a toast. "To surviving another day in this godforsaken galaxy."`, `${name} drains his glass. "That hits the spot. Reminds me of shore leave on Titan."`],
+      contemplative: [`${name} holds the cup, eyes closed. "I can taste the sunlight of the world where this was grown."`, `${name} sips slowly. "A shared drink opens neural pathways to trust."`],
+      boisterous: [`${name} SMASHES his mug down. "ANOTHER! That was GLORIOUS!"`, `${name} drinks heartily. "On my homeworld, we drink from the skulls of our enemies! ...But mugs work too."`],
+      sly: [`${name} clinks glasses. "The best deals are made over drinks. Coincidence?"`, `${name} sips. "I once traded a bottle of rare vintage for a whole cargo hold of equipment."`],
+      mystical: [`${name} watches light dance through the liquid. "Each bubble is a universe being born."`, `${name}'s glow brightens slightly. "The ritual of sharing sustenance... profoundly beautiful."`]
+    },
+    homeworld: {
+      witty: [`${name}'s expression softens. "Earth. Blue marble floating in the void. I miss the ocean breezes of New Sydney."`, `${name} gazes at the stars. "Home is wherever I park this ship. But yes... I miss Earth sometimes."`],
+      serene: [`${name}'s antennae droop slightly. "Zelthara. A world of crystal spires and telepathic harmony. I hear their songs even now, across the light-years."`, `${name} projects a faint image of a shimmering blue world. "So far... but never truly gone."`],
+      fierce: [`${name}'s ears flatten. "Krynnax. Endless savannas under twin suns. The Great Hunt... I was the youngest to complete it. My clan was proud."`, `${name} shows her fangs in a bittersweet grin. "I left to prove myself. Some days I wonder if I've proven enough."`],
+      cunning: [`${name}'s eyes narrow. "The Vossk Hegemony is built on trade and treachery. I excelled at both. My exile was... political."`, `${name} traces a claw on the table. "Vosskar is beautiful in its way. Obsidian cities rising from jade seas."`],
+      ethereal: [`${name}'s light dims momentarily. "The Luminous Expanse. We Aelari are born from dying stars, Captain. Our homeworld is... everywhere and nowhere."`, `${name} sings a hauntingly beautiful note. "This is the sound of my birthstar. Can you hear the longing?"`],
+      gruff: [`${name} stares into the distance. "Mars Colony Three. Grew up in the dust domes before the terraforming finished. Made you tough or it broke you."`, `${name} clears his throat. "Haven't been back in decades. Not sure I'd recognize it now."`],
+      contemplative: [`${name}'s eyes swirl with galaxies. "Zelthara's psychic academies taught me that home is a construct of memory. And yet... I dream of it nightly."`, `${name} touches his temple. "I can project my memories of home. Would you like to see?"`],
+      boisterous: [`${name}'s eyes light up. "KRYNNAX! The arena pits, the great feasts, the warrior trials! You should visit, Captain - if you survive!"`, `${name} pounds his chest. "My clan, the Ironclaws, rule the Northern Mountains. Perhaps one day I'll take you there!"`],
+      sly: [`${name}'s scales darken. "Vosskar. I'd go back if they wouldn't immediately throw me in a cell. Or worse."`, `${name} laughs quietly. "Let's just say I made some powerful enemies. And some very profitable friends."`],
+      mystical: [`${name}'s entire body glows brighter. "We are children of the cosmos, Captain. Every star is home. Every photon, a relative."`, `${name} traces shimmering paths in the air. "But there is one nebula... where the light is sweeter than anywhere else. There, I was born."`]
+    },
+    game: {
+      witty: [`${name} shuffles holographic cards. "Quantum Poker? Fair warning - I count cards. ALL the cards."`, `${name} grins. "Best of three. Loser buys dinner at the next StarDock."`],
+      serene: [`${name} sets up crystal pieces. "Zelthari Mind-Chess. The pieces move when you think your strategy clearly enough."`, `${name} smiles. "A game shared is a bond strengthened."`],
+      fierce: [`${name} cracks her knuckles. "Arm wrestling? I'll go easy on you. ...Mostly."`, `${name}'s tail swishes eagerly. "My people play Claw's Edge. It involves... some risk. Interested?"`],
+      cunning: [`${name} produces dice. "Vossk Trading Game. The rules change every round, just like real business."`, `${name} deals cards with practiced ease. "Shall we make it interesting? Say... 100 credits?"`],
+      ethereal: [`${name} creates patterns of light between her hands. "This is a light-weaving game. Try to match my patterns."`, `${name} hums. "Among the Aelari, games are songs sung together."`],
+      gruff: [`${name} produces a worn deck. "Five-Card Federation. Standard military rules. No crying when I win."`, `${name} chuckles. "Used to fleece the entire barracks with this game. Old habits."`],
+      contemplative: [`${name} projects a holographic puzzle. "This is a psychic labyrinth. Navigate it with your thoughts."`, `${name} nods approvingly. "Your mind is agile, Captain. An excellent opponent."`],
+      boisterous: [`${name} SLAMS dice on the table. "WARRIOR'S GAMBIT! Roll the bones! The ancestors guide the worthy!"`, `${name} roars. "HAHA! Good roll! You have the heart of a Krynnari warrior!"`],
+      sly: [`${name} flips a coin. "Heads I win, tails you lose. ...Kidding. Mostly."`, `${name} grins. "Three-shell game? No? Smart captain."`],
+      mystical: [`${name} creates a shimmering sphere. "Gaze into the starlight. Tell me what shapes you see. There are no wrong answers... only revealing ones."`, `${name} traces constellations. "The stars play the longest game. We merely participate."`]
+    },
+    stargaze: {
+      witty: [`${name} leans against the viewport. "Billions of stars, and we're arguing about trade routes. Puts things in perspective."`, `${name} points. "See that star cluster? I almost crashed into it once. Beautiful AND deadly. My type."`],
+      serene: [`${name}'s antennae extend toward the stars. "I can feel them, Captain. Every star, a mind. Every nebula, a dream."`, `${name} takes your hand gently. "In this moment, we are connected to everything."`],
+      fierce: [`${name}'s pupils dilate in the starlight. "My people used to navigate by the stars alone. No maps, no instruments. Just instinct."`, `${name} is unexpectedly quiet. "...It's beautiful. Don't tell anyone I said that."`],
+      cunning: [`${name} studies the stars calculatingly. "Each one of those lights is a potential market. The galaxy is rich beyond counting."`, `${name}'s expression softens, just for a moment. "Even Vossk appreciate beauty. We just don't admit it often."`],
+      ethereal: [`${name} begins to GLOW, her light harmonizing with the distant stars. It's breathtaking. "We are all starlight, Captain. All of us."`, `${name} sings a wordless melody. Outside the viewport, you'd swear the stars pulse in rhythm.`],
+      gruff: [`${name} stands beside you in silence for a long moment. "...You know, this is why I came out here. Not the fighting. This."`, `${name} clears his throat. "The stars don't change. Everything else does. I find that... comforting."`],
+      contemplative: [`${name}'s eyes reflect entire galaxies. "Each photon that reaches our eyes has traveled millions of years. We see the past, always."`, `${name} whispers. "In the quiet between stars, I hear the heartbeat of the universe."`],
+      boisterous: [`${name} is surprisingly quiet for once, then: "...My mother used to say the stars are the eyes of fallen warriors. Watching over us."`, `${name}'s voice drops low. "Even warriors need moments of peace, Captain. Thank you for this one."`],
+      sly: [`${name} gazes out thoughtfully. "Funny... all that darkness, and still so much light. Rather like the galaxy's inhabitants."`, `${name} is quiet for a long moment. "...Don't tell anyone, but these are my favorite moments aboard this ship."`],
+      mystical: [`${name}'s entire body becomes translucent, merging with the starfield. "We are home, Captain. We are always home."`, `${name} whispers, his light pulsing slowly. "The universe breathes. Can you feel it? In... and out... and in again."`]
+    }
+  };
+
+  const actionDialogues = dialogues[action] || dialogues.talk;
+  const personalityLines = actionDialogues[p] || actionDialogues.witty;
+  const text = personalityLines[Math.floor(Math.random() * personalityLines.length)];
+
+  // Affinity/mood changes based on action
+  let affinityDelta = 0;
+  let moodDelta = 0;
+
+  switch (action) {
+    case 'talk':
+      affinityDelta = highAffinity ? 2 : 3;
+      moodDelta = lowMood ? 5 : 2;
+      break;
+    case 'drink':
+      affinityDelta = 3;
+      moodDelta = 5;
+      break;
+    case 'homeworld':
+      affinityDelta = highAffinity ? 5 : 2;
+      moodDelta = comp.affinity >= 60 ? 3 : -2;
+      break;
+    case 'game':
+      affinityDelta = 4;
+      moodDelta = 6;
+      break;
+    case 'stargaze':
+      affinityDelta = highAffinity ? 6 : 3;
+      moodDelta = 4;
+      break;
+  }
+
+  return { text, affinityDelta, moodDelta };
+}
+
+function getQuartersStatus(db, playerId) {
+  const companions = getPlayerCompanions(db, playerId);
+  const ship = db.prepare(`SELECT s.name, st.name as type_name FROM ships s JOIN ship_types st ON s.type_id = st.id WHERE s.player_id = ? AND s.active = 1`).get(playerId);
+  return {
+    shipName: ship ? ship.name : 'Unknown',
+    shipType: ship ? ship.type_name : 'Unknown',
+    companions: companions.map(c => ({
+      companion_type_id: c.companion_type_id,
+      name: c.name,
+      nickname: c.nickname,
+      race: c.race,
+      gender: c.gender,
+      personality: c.personality,
+      description: c.description,
+      affinity: c.affinity,
+      mood: c.mood,
+      lastInteraction: c.last_interaction
+    }))
+  };
+}
+
+// ============================================================
+
+module.exports = {
   // Trading
   tradeAtPort,
   getPortInfo,
@@ -1337,5 +1705,19 @@ export {
   npcInteraction,
   // Utility
   addTurns,
-  getLeaderboard
+  getLeaderboard,
+  // Ship Customization
+  renameShip,
+  getUpgradeTypes,
+  getShipUpgrades,
+  installUpgrade,
+  removeUpgrade,
+  getShipUpgradeBonus,
+  // Captain's Quarters
+  getCompanionTypes,
+  getPlayerCompanions,
+  hireCompanion,
+  dismissCompanion,
+  interactWithCompanion,
+  getQuartersStatus
 };

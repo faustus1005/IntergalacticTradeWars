@@ -134,6 +134,8 @@ function enterGame() {
       if (panel === 'comms') refreshMessages();
       if (panel === 'rankings') loadRankings();
       if (panel === 'market') refreshMarket();
+      if (panel === 'upgrades') loadUpgradesPanel();
+      if (panel === 'quarters') loadQuartersPanel();
     });
   });
 
@@ -1376,6 +1378,330 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ============ SHIP UPGRADES ============
+
+function loadUpgradesPanel() {
+  const ship = gameState.ship;
+  if (ship) {
+    document.getElementById('rename-ship-input').value = ship.name || '';
+  }
+
+  // Load installed upgrades
+  socket.emit('getShipUpgrades', (upgrades) => {
+    const list = document.getElementById('installed-list');
+    if (!upgrades || upgrades.length === 0) {
+      list.innerHTML = '<p class="info-text">No upgrades installed. Visit a StarDock to customize your ship.</p>';
+    } else {
+      list.innerHTML = '';
+      upgrades.forEach(u => {
+        const div = document.createElement('div');
+        div.className = 'upgrade-installed-item';
+        div.innerHTML = `
+          <div class="upgrade-info">
+            <span class="upgrade-name">${u.name}</span>
+            <span class="upgrade-cat">${u.category}</span>
+            ${u.stacks > 1 ? `<span class="upgrade-stacks">x${u.stacks}</span>` : ''}
+          </div>
+          <div class="upgrade-desc">${u.description}</div>
+          <button onclick="removeUpgradeItem(${u.upgrade_type_id})" class="upgrade-remove-btn">Remove (40% refund)</button>`;
+        list.appendChild(div);
+      });
+    }
+  });
+
+  // Load available upgrades (only useful at StarDock)
+  socket.emit('getUpgradeTypes', (types) => {
+    const catalog = document.getElementById('upgrade-catalog');
+    catalog.innerHTML = '';
+    const atStarDock = gameState.sector && gameState.sector.has_stardock;
+    const categories = {};
+    types.forEach(t => {
+      if (!categories[t.category]) categories[t.category] = [];
+      categories[t.category].push(t);
+    });
+
+    const categoryNames = {
+      engines: 'Engines', weapons: 'Weapons', shields: 'Shields',
+      scanners: 'Scanners', cargo: 'Cargo', special: 'Special'
+    };
+
+    for (const [cat, catUpgrades] of Object.entries(categories)) {
+      const section = document.createElement('div');
+      section.className = 'upgrade-category';
+      section.innerHTML = `<h4>${categoryNames[cat] || cat}</h4>`;
+
+      catUpgrades.forEach(u => {
+        const canBuy = atStarDock && gameState.player.credits >= u.base_cost;
+        const card = document.createElement('div');
+        card.className = 'upgrade-card';
+        card.innerHTML = `
+          <div class="upgrade-card-header">
+            <span class="upgrade-name">${u.name}</span>
+            <span class="upgrade-cost">${formatNumber(u.base_cost)} cr</span>
+          </div>
+          <div class="upgrade-desc">${u.description}</div>
+          <div class="upgrade-reqs">
+            ${u.equipment_cost > 0 ? `<span>Equipment: ${u.equipment_cost}</span>` : ''}
+            <span>Max: ${u.max_stacks}x</span>
+          </div>
+          <button ${canBuy ? '' : 'disabled'} onclick="installUpgradeItem(${u.id})">
+            ${!atStarDock ? 'Need StarDock' : canBuy ? 'Install' : 'Insufficient Funds'}
+          </button>`;
+        section.appendChild(card);
+      });
+      catalog.appendChild(section);
+    }
+  });
+}
+
+function doRenameShip() {
+  const name = document.getElementById('rename-ship-input').value.trim();
+  if (!name) return log('Enter a ship name', 'warning');
+  socket.emit('renameShip', name, (result) => {
+    log(result.message, result.success ? 'success' : 'warning');
+    if (result.success) {
+      gameState.ship = result.ship;
+      updateUI();
+    }
+  });
+}
+
+function installUpgradeItem(upgradeTypeId) {
+  socket.emit('installUpgrade', upgradeTypeId, (result) => {
+    log(result.message, result.success ? 'success' : 'warning');
+    if (result.success) {
+      gameState.player = result.player;
+      gameState.ship = result.ship;
+      updateUI();
+      loadUpgradesPanel();
+    }
+  });
+}
+
+function removeUpgradeItem(upgradeTypeId) {
+  showModal('Remove Upgrade', 'Are you sure? You will receive 40% of the cost as a refund.', [
+    { text: 'Cancel', action: closeModal },
+    { text: 'Remove', primary: true, action: () => {
+      closeModal();
+      socket.emit('removeUpgrade', upgradeTypeId, (result) => {
+        log(result.message, result.success ? 'success' : 'warning');
+        if (result.success) {
+          gameState.player = result.player;
+          gameState.ship = result.ship;
+          updateUI();
+          loadUpgradesPanel();
+        }
+      });
+    }}
+  ]);
+}
+
+// ============ CAPTAIN'S QUARTERS ============
+
+let activeCompanionId = null;
+
+function loadQuartersPanel() {
+  socket.emit('getQuartersStatus', (status) => {
+    if (!status) return;
+
+    document.getElementById('quarters-desc').textContent =
+      `Your private retreat aboard the ${status.shipType} "${status.shipName}". A viewport shows the stars drifting by.`;
+
+    // Show current companions
+    const list = document.getElementById('companion-list');
+    const interactionPanel = document.getElementById('companion-interaction');
+    interactionPanel.style.display = 'none';
+
+    if (status.companions.length === 0) {
+      list.innerHTML = '<p class="info-text">Your quarters are empty. Hire a companion to keep you company among the stars.</p>';
+    } else {
+      list.innerHTML = '';
+      status.companions.forEach(c => {
+        const moodLabel = c.mood >= 70 ? 'Happy' : c.mood >= 40 ? 'Content' : 'Melancholy';
+        const moodColor = c.mood >= 70 ? 'var(--green)' : c.mood >= 40 ? 'var(--yellow)' : 'var(--red)';
+        const affinityLabel = c.affinity >= 80 ? 'Devoted' : c.affinity >= 60 ? 'Friendly' : c.affinity >= 40 ? 'Neutral' : 'Distant';
+        const affinityColor = c.affinity >= 80 ? 'var(--accent)' : c.affinity >= 60 ? 'var(--green)' : c.affinity >= 40 ? 'var(--yellow)' : 'var(--text-dim)';
+        const genderIcon = c.gender === 'female' ? '♀' : '♂';
+
+        const div = document.createElement('div');
+        div.className = 'companion-card';
+        div.innerHTML = `
+          <div class="companion-header">
+            <span class="companion-name">${c.name} <span class="companion-gender">${genderIcon}</span></span>
+            <span class="companion-race">${c.race}</span>
+          </div>
+          <div class="companion-personality">${c.personality}</div>
+          <div class="companion-meters">
+            <div class="meter-row">
+              <span class="meter-label">Mood:</span>
+              <div class="meter-bar"><div class="meter-fill" style="width:${c.mood}%;background:${moodColor}"></div></div>
+              <span class="meter-text" style="color:${moodColor}">${moodLabel}</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-label">Bond:</span>
+              <div class="meter-bar"><div class="meter-fill" style="width:${c.affinity}%;background:${affinityColor}"></div></div>
+              <span class="meter-text" style="color:${affinityColor}">${affinityLabel}</span>
+            </div>
+          </div>
+          <div class="companion-actions">
+            <button onclick="openCompanionInteraction(${c.companion_type_id})">Visit</button>
+            <button onclick="dismissCompanionPrompt(${c.companion_type_id}, '${escapeHtml(c.name)}')" class="dismiss-btn">Dismiss</button>
+          </div>`;
+        list.appendChild(div);
+      });
+    }
+
+    // Load hire catalog
+    loadHireCatalog(status.companions.map(c => c.companion_type_id));
+  });
+}
+
+function loadHireCatalog(hiredIds) {
+  socket.emit('getCompanionTypes', (types) => {
+    const catalog = document.getElementById('hire-catalog');
+    catalog.innerHTML = '';
+    const available = types.filter(t => !hiredIds.includes(t.id));
+
+    if (available.length === 0) {
+      catalog.innerHTML = '<p class="info-text">All companions have been hired!</p>';
+      return;
+    }
+
+    available.forEach(t => {
+      const genderIcon = t.gender === 'female' ? '♀' : '♂';
+      const canHire = gameState.player.credits >= t.hire_cost;
+      const card = document.createElement('div');
+      card.className = 'hire-card';
+      card.innerHTML = `
+        <div class="hire-header">
+          <span class="hire-name">${t.name} <span class="companion-gender">${genderIcon}</span></span>
+          <span class="hire-race">${t.race}</span>
+        </div>
+        <div class="hire-desc">${t.description}</div>
+        <div class="hire-cost">${formatNumber(t.hire_cost)} credits</div>
+        <button ${canHire ? '' : 'disabled'} onclick="doHireCompanion(${t.id})">
+          ${canHire ? 'Hire' : 'Insufficient Credits'}
+        </button>`;
+      catalog.appendChild(card);
+    });
+  });
+}
+
+function doHireCompanion(companionTypeId) {
+  socket.emit('hireCompanion', companionTypeId, (result) => {
+    log(result.message, result.success ? 'success' : 'warning');
+    if (result.success) {
+      gameState.player = result.player;
+      updateUI();
+      loadQuartersPanel();
+    }
+  });
+}
+
+function dismissCompanionPrompt(companionTypeId, name) {
+  showModal('Dismiss Companion', `Are you sure you want to dismiss ${name}? This cannot be undone.`, [
+    { text: 'Cancel', action: closeModal },
+    { text: 'Dismiss', primary: true, action: () => {
+      closeModal();
+      socket.emit('dismissCompanion', companionTypeId, (result) => {
+        log(result.message, result.success ? 'success' : 'warning');
+        if (result.success) loadQuartersPanel();
+      });
+    }}
+  ]);
+}
+
+function openCompanionInteraction(companionTypeId) {
+  activeCompanionId = companionTypeId;
+  document.getElementById('quarters-companions').style.display = 'none';
+  document.getElementById('hire-section').style.display = 'none';
+  const panel = document.getElementById('companion-interaction');
+  panel.style.display = 'block';
+
+  // Get companion info from current status
+  socket.emit('getQuartersStatus', (status) => {
+    const comp = status.companions.find(c => c.companion_type_id === companionTypeId);
+    if (!comp) return;
+
+    const genderIcon = comp.gender === 'female' ? '♀' : '♂';
+    const moodLabel = comp.mood >= 70 ? 'Happy' : comp.mood >= 40 ? 'Content' : 'Melancholy';
+    const moodColor = comp.mood >= 70 ? 'var(--green)' : comp.mood >= 40 ? 'var(--yellow)' : 'var(--red)';
+    const affinityLabel = comp.affinity >= 80 ? 'Devoted' : comp.affinity >= 60 ? 'Friendly' : comp.affinity >= 40 ? 'Neutral' : 'Distant';
+    const affinityColor = comp.affinity >= 80 ? 'var(--accent)' : comp.affinity >= 60 ? 'var(--green)' : comp.affinity >= 40 ? 'var(--yellow)' : 'var(--text-dim)';
+
+    document.getElementById('interaction-header').innerHTML = `
+      <div class="interact-portrait">
+        <div class="portrait-name">${comp.name} ${genderIcon}</div>
+        <div class="portrait-race">${comp.race} - ${comp.personality}</div>
+        <div class="portrait-desc">${comp.description}</div>
+        <div class="companion-meters" style="margin-top:8px">
+          <div class="meter-row">
+            <span class="meter-label">Mood:</span>
+            <div class="meter-bar"><div class="meter-fill" style="width:${comp.mood}%;background:${moodColor}"></div></div>
+            <span class="meter-text" style="color:${moodColor}">${moodLabel}</span>
+          </div>
+          <div class="meter-row">
+            <span class="meter-label">Bond:</span>
+            <div class="meter-bar"><div class="meter-fill" style="width:${comp.affinity}%;background:${affinityColor}"></div></div>
+            <span class="meter-text" style="color:${affinityColor}">${affinityLabel}</span>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById('interaction-content').innerHTML = '<p class="info-text">Choose an interaction...</p>';
+
+    const actions = document.getElementById('interaction-actions');
+    actions.innerHTML = '';
+    const interactions = [
+      { id: 'talk', label: 'Have a Conversation', icon: '💬' },
+      { id: 'drink', label: 'Share a Drink', icon: '🥂' },
+      { id: 'homeworld', label: 'Ask About Homeworld', icon: '🌍' },
+      { id: 'game', label: 'Play a Game', icon: '🎲' },
+      { id: 'stargaze', label: 'Stargaze Together', icon: '✨' },
+    ];
+
+    interactions.forEach(i => {
+      const btn = document.createElement('button');
+      btn.className = 'interact-btn';
+      btn.innerHTML = `<span class="interact-icon">${i.icon}</span> ${i.label}`;
+      btn.onclick = () => doCompanionInteraction(companionTypeId, i.id);
+      actions.appendChild(btn);
+    });
+  });
+}
+
+function doCompanionInteraction(companionTypeId, action) {
+  socket.emit('interactCompanion', { companionTypeId, action }, (result) => {
+    if (result.success) {
+      const content = document.getElementById('interaction-content');
+      const changeText = [];
+      if (result.affinityChange > 0) changeText.push(`<span style="color:var(--green)">Bond +${result.affinityChange}</span>`);
+      if (result.moodChange > 0) changeText.push(`<span style="color:var(--green)">Mood +${result.moodChange}</span>`);
+      if (result.affinityChange < 0) changeText.push(`<span style="color:var(--red)">Bond ${result.affinityChange}</span>`);
+      if (result.moodChange < 0) changeText.push(`<span style="color:var(--red)">Mood ${result.moodChange}</span>`);
+
+      content.innerHTML = `
+        <div class="interaction-dialogue">
+          <p>${result.message}</p>
+          <div class="interaction-changes">${changeText.join(' ')}</div>
+        </div>`;
+
+      // Refresh the meters
+      openCompanionInteraction(companionTypeId);
+    } else {
+      log(result.message, 'warning');
+    }
+  });
+}
+
+function closeInteraction() {
+  activeCompanionId = null;
+  document.getElementById('companion-interaction').style.display = 'none';
+  document.getElementById('quarters-companions').style.display = 'block';
+  document.getElementById('hire-section').style.display = 'block';
+  loadQuartersPanel();
 }
 
 // ============ INIT ============

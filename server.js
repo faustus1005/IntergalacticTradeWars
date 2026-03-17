@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { getDb, seedShipTypes, seedSkills } = require('./src/database');
+const { getDb, seedShipTypes, seedSkills, seedUpgradeTypes, seedCompanionTypes } = require('./src/database');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,6 +21,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 const db = getDb();
 seedShipTypes();
 seedSkills();
+seedUpgradeTypes();
+seedCompanionTypes();
 
 // Check if universe exists, generate if not
 const sectorCount = db.prepare('SELECT COUNT(*) as c FROM sectors').get().c;
@@ -384,6 +386,74 @@ io.on('connection', (socket) => {
   // NPC interaction
   socket.on('interactNPC', (npcId, callback) => {
     callback(game.npcInteraction(db, playerId, npcId));
+  });
+
+  // Ship Customization
+  socket.on('renameShip', (newName, callback) => {
+    const result = game.renameShip(db, playerId, newName);
+    if (result.success) {
+      const newShip = game.getPlayerShip(db, playerId);
+      callback({ ...result, ship: newShip });
+    } else {
+      callback(result);
+    }
+  });
+
+  socket.on('getUpgradeTypes', (callback) => {
+    callback(game.getUpgradeTypes(db));
+  });
+
+  socket.on('getShipUpgrades', (callback) => {
+    callback(game.getShipUpgrades(db, playerId));
+  });
+
+  socket.on('installUpgrade', (upgradeTypeId, callback) => {
+    const result = game.installUpgrade(db, playerId, upgradeTypeId);
+    if (result.success) {
+      const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+      const newShip = game.getPlayerShip(db, playerId);
+      callback({ ...result, player: newPlayer, ship: newShip });
+    } else {
+      callback(result);
+    }
+  });
+
+  socket.on('removeUpgrade', (upgradeTypeId, callback) => {
+    const result = game.removeUpgrade(db, playerId, upgradeTypeId);
+    if (result.success) {
+      const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+      const newShip = game.getPlayerShip(db, playerId);
+      callback({ ...result, player: newPlayer, ship: newShip });
+    } else {
+      callback(result);
+    }
+  });
+
+  // Captain's Quarters
+  socket.on('getCompanionTypes', (callback) => {
+    callback(game.getCompanionTypes(db));
+  });
+
+  socket.on('getQuartersStatus', (callback) => {
+    callback(game.getQuartersStatus(db, playerId));
+  });
+
+  socket.on('hireCompanion', (companionTypeId, callback) => {
+    const result = game.hireCompanion(db, playerId, companionTypeId);
+    if (result.success) {
+      const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+      callback({ ...result, player: newPlayer });
+    } else {
+      callback(result);
+    }
+  });
+
+  socket.on('dismissCompanion', (companionTypeId, callback) => {
+    callback(game.dismissCompanion(db, playerId, companionTypeId));
+  });
+
+  socket.on('interactCompanion', ({ companionTypeId, action }, callback) => {
+    callback(game.interactWithCompanion(db, playerId, companionTypeId, action));
   });
 
   // Refresh state

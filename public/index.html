@@ -59,6 +59,8 @@
         <button class="nav-btn" data-panel="market">Market</button>
         <button class="nav-btn" data-panel="skills">Skills</button>
         <button class="nav-btn" data-panel="corp">Corp</button>
+        <button class="nav-btn" data-panel="upgrades">Upgrades</button>
+        <button class="nav-btn" data-panel="quarters">Quarters</button>
         <button class="nav-btn" data-panel="comms">Comms</button>
         <button class="nav-btn" data-panel="rankings">Rankings</button>
       </div>
@@ -320,6 +322,53 @@
               <p class="msg-from" id="msg-read-from"></p>
               <div id="msg-read-body"></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Upgrades Panel -->
+      <div id="panel-upgrades" class="panel">
+        <div class="panel-content">
+          <h2>Ship Customization</h2>
+          <div class="upgrades-ship-name">
+            <h3>Ship Name</h3>
+            <div class="rename-form">
+              <input type="text" id="rename-ship-input" placeholder="Enter new ship name" maxlength="30">
+              <button onclick="doRenameShip()">Rename</button>
+            </div>
+          </div>
+          <div id="installed-upgrades" class="installed-section">
+            <h3>Installed Upgrades</h3>
+            <div id="installed-list"></div>
+          </div>
+          <div id="available-upgrades">
+            <h3>Available Upgrades <span class="info-text">(Requires StarDock)</span></h3>
+            <div id="upgrade-catalog" class="upgrade-grid"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Captain's Quarters Panel -->
+      <div id="panel-quarters" class="panel">
+        <div class="panel-content">
+          <h2>Captain's Quarters</h2>
+          <div class="quarters-ambient">
+            <p class="quarters-desc" id="quarters-desc">Your private retreat aboard the ship. A viewport shows the stars drifting by.</p>
+          </div>
+          <div id="quarters-companions" class="quarters-section">
+            <h3>Your Companions</h3>
+            <div id="companion-list"></div>
+          </div>
+          <div id="companion-interaction" class="quarters-section" style="display:none">
+            <div id="interaction-header"></div>
+            <div id="interaction-content"></div>
+            <div class="interaction-actions" id="interaction-actions"></div>
+            <button class="action-btn" onclick="closeInteraction()" style="margin-top:12px">Return to Quarters</button>
+          </div>
+          <div id="hire-section" class="quarters-section">
+            <h3>Hire Companions</h3>
+            <p class="info-text">Up to 3 companions can live in your quarters. Various races from across the galaxy.</p>
+            <div id="hire-catalog" class="companion-grid"></div>
           </div>
         </div>
       </div>
