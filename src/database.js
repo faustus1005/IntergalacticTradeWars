@@ -354,6 +354,20 @@ function initSchema() {
 
     CREATE INDEX IF NOT EXISTS idx_ship_upgrades_ship ON ship_upgrades(ship_id);
     CREATE INDEX IF NOT EXISTS idx_companions_player ON companions(player_id);
+
+    CREATE TABLE IF NOT EXISTS security_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      user_id INTEGER,
+      player_id INTEGER,
+      ip_address TEXT,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_log_event ON security_log(event_type);
+    CREATE INDEX IF NOT EXISTS idx_security_log_user ON security_log(user_id);
+    CREATE INDEX IF NOT EXISTS idx_security_log_created ON security_log(created_at);
   `);
 }
 

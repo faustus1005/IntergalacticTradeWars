@@ -5,6 +5,7 @@ const path = require('path');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { getDb, seedShipTypes, seedSkills, seedUpgradeTypes, seedCompanionTypes } = require('./src/database');
+const logger = require('./src/logger');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,7 +16,29 @@ const PORT = process.env.PORT || 3000;
 const UNIVERSE_SIZE = parseInt(process.env.UNIVERSE_SIZE) || 500;
 
 app.use(express.json());
+
+// HTTP request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const userId = req.user ? req.user.userId : null;
+    logger.access(req.method, req.originalUrl, res.statusCode, getClientIp(req), userId, duration);
+  });
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+function getClientIp(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+}
+
+function getSocketIp(socket) {
+  return socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    || socket.handshake.address
+    || 'unknown';
+}
 
 // Initialize database and seed data
 const db = getDb();
@@ -40,23 +63,36 @@ const game = require('./src/game');
 // Auth middleware for REST endpoints
 function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
+  if (!token) {
+    logger.security(db, 'AUTH_NO_TOKEN', 'REST request with no token', { ip: getClientIp(req), url: req.originalUrl });
+    return res.status(401).json({ error: 'No token' });
+  }
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
+    logger.security(db, 'AUTH_INVALID_TOKEN', 'REST request with invalid token', { ip: getClientIp(req), url: req.originalUrl });
     res.status(401).json({ error: 'Invalid token' });
   }
 }
 
 function adminMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
+  if (!token) {
+    logger.security(db, 'ADMIN_NO_TOKEN', 'Admin endpoint accessed with no token', { ip: getClientIp(req), url: req.originalUrl });
+    return res.status(401).json({ error: 'No token' });
+  }
   try {
     req.user = jwt.verify(token, JWT_SECRET);
-    if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+    if (!req.user.isAdmin) {
+      logger.security(db, 'ADMIN_ACCESS_DENIED', `Non-admin user attempted admin access: ${req.originalUrl}`, {
+        userId: req.user.userId, playerId: req.user.playerId, ip: getClientIp(req), url: req.originalUrl
+      });
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     next();
   } catch {
+    logger.security(db, 'ADMIN_INVALID_TOKEN', 'Admin endpoint accessed with invalid token', { ip: getClientIp(req), url: req.originalUrl });
     res.status(401).json({ error: 'Invalid token' });
   }
 }
@@ -91,9 +127,18 @@ app.post('/api/register', (req, res) => {
     initSkills();
 
     const token = jwt.sign({ userId, playerId, playerName, isAdmin: isAdmin === 1 }, JWT_SECRET, { expiresIn: '7d' });
+
+    logger.security(db, 'USER_REGISTERED', `New user registered: ${username} (player: ${playerName})`, {
+      userId, playerId, ip: getClientIp(req), username, playerName, isAdmin: isAdmin === 1
+    });
+
     res.json({ token, playerId, playerName, isAdmin: isAdmin === 1 });
   } catch (err) {
-    if (err.message.includes('UNIQUE')) return res.status(400).json({ error: 'Username or player name already taken' });
+    if (err.message.includes('UNIQUE')) {
+      logger.security(db, 'REGISTER_DUPLICATE', `Registration failed - duplicate: ${username}`, { ip: getClientIp(req), username });
+      return res.status(400).json({ error: 'Username or player name already taken' });
+    }
+    logger.error('auth', `Registration error for ${username}`, { error: err.message });
     res.status(500).json({ error: 'Registration failed' });
   }
 });
@@ -104,6 +149,9 @@ app.post('/api/login', (req, res) => {
 
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    logger.security(db, 'LOGIN_FAILED', `Failed login attempt for: ${username}`, {
+      ip: getClientIp(req), username, userExists: !!user
+    });
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
@@ -114,6 +162,11 @@ app.post('/api/login', (req, res) => {
 
   const isAdmin = user.is_admin === 1;
   const token = jwt.sign({ userId: user.id, playerId: player.id, playerName: player.name, isAdmin }, JWT_SECRET, { expiresIn: '7d' });
+
+  logger.security(db, 'LOGIN_SUCCESS', `User logged in: ${username}`, {
+    userId: user.id, playerId: player.id, ip: getClientIp(req), username, isAdmin
+  });
+
   res.json({ token, playerId: player.id, playerName: player.name, isAdmin });
 });
 
@@ -160,11 +213,17 @@ app.put('/api/admin/users/:id', adminMiddleware, (req, res) => {
   }
   if (is_admin !== undefined) {
     db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(is_admin ? 1 : 0, id);
+    logger.security(db, 'ADMIN_CHANGE_ROLE', `Admin ${req.user.playerName} changed admin status of user ${id} to ${is_admin}`, {
+      userId: req.user.userId, ip: getClientIp(req), targetUserId: parseInt(id), newAdminStatus: is_admin
+    });
   }
   if (password) {
     if (password.length < 4) return res.status(400).json({ error: 'Password min 4 chars' });
     const hash = bcrypt.hashSync(password, 10);
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);
+    logger.security(db, 'ADMIN_RESET_PASSWORD', `Admin ${req.user.playerName} reset password for user ${id}`, {
+      userId: req.user.userId, ip: getClientIp(req), targetUserId: parseInt(id)
+    });
   }
   res.json({ success: true });
 });
@@ -190,6 +249,12 @@ app.delete('/api/admin/users/:id', adminMiddleware, (req, res) => {
     db.prepare('DELETE FROM players WHERE id = ?').run(player.id);
   }
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
+
+  logger.security(db, 'ADMIN_DELETE_USER', `Admin ${req.user.playerName} deleted user ${id}`, {
+    userId: req.user.userId, ip: getClientIp(req), targetUserId: parseInt(id),
+    targetPlayerId: player ? player.id : null
+  });
+
   res.json({ success: true });
 });
 
@@ -228,6 +293,12 @@ app.put('/api/admin/players/:id', adminMiddleware, (req, res) => {
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
   vals.push(id);
   db.prepare(`UPDATE players SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+
+  logger.security(db, 'ADMIN_MODIFY_PLAYER', `Admin ${req.user.playerName} modified player ${id}`, {
+    userId: req.user.userId, ip: getClientIp(req), targetPlayerId: parseInt(id),
+    modifiedFields: Object.keys(req.body)
+  });
+
   res.json({ success: true });
 });
 
@@ -268,6 +339,12 @@ app.put('/api/admin/players/:id/ship', adminMiddleware, (req, res) => {
   if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
   vals.push(ship.id);
   db.prepare(`UPDATE ships SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+
+  logger.security(db, 'ADMIN_MODIFY_SHIP', `Admin ${req.user.playerName} modified ship for player ${id}`, {
+    userId: req.user.userId, ip: getClientIp(req), targetPlayerId: parseInt(id),
+    shipId: ship.id, modifiedFields: Object.keys(req.body)
+  });
+
   res.json({ success: true });
 });
 
@@ -330,20 +407,30 @@ app.get('/api/admin/corporations', adminMiddleware, (req, res) => {
 
 app.delete('/api/admin/corporations/:id', adminMiddleware, (req, res) => {
   const { id } = req.params;
+  const corp = db.prepare('SELECT name FROM corporations WHERE id = ?').get(id);
   db.prepare('UPDATE players SET corp_id = NULL WHERE corp_id = ?').run(id);
   db.prepare('DELETE FROM corp_members WHERE corp_id = ?').run(id);
   db.prepare('DELETE FROM corporations WHERE id = ?').run(id);
+
+  logger.security(db, 'ADMIN_DELETE_CORP', `Admin ${req.user.playerName} deleted corporation ${id} (${corp ? corp.name : 'unknown'})`, {
+    userId: req.user.userId, ip: getClientIp(req), corpId: parseInt(id), corpName: corp ? corp.name : null
+  });
+
   res.json({ success: true });
 });
 
 // Socket.IO auth middleware
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('Authentication required'));
+  if (!token) {
+    logger.security(db, 'WS_AUTH_NO_TOKEN', 'WebSocket connection attempt with no token', { ip: getSocketIp(socket) });
+    return next(new Error('Authentication required'));
+  }
   try {
     socket.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
+    logger.security(db, 'WS_AUTH_INVALID_TOKEN', 'WebSocket connection attempt with invalid token', { ip: getSocketIp(socket) });
     next(new Error('Invalid token'));
   }
 });
@@ -356,7 +443,9 @@ io.on('connection', (socket) => {
   playerSockets.set(playerId, socket);
   db.prepare('UPDATE players SET online = 1 WHERE id = ?').run(playerId);
 
-  console.log(`${playerName} connected`);
+  logger.security(db, 'WS_CONNECTED', `Player connected: ${playerName}`, {
+    userId: socket.user.userId, playerId, ip: getSocketIp(socket), playerName
+  });
 
   // Send initial game state
   const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
@@ -389,6 +478,9 @@ io.on('connection', (socket) => {
   socket.on('trade', ({ action, commodity, amount }, callback) => {
     const result = game.tradeAtPort(db, playerId, action, commodity, amount);
     if (result.success) {
+      logger.info('trade', `${playerName} ${action} ${amount} ${commodity}`, {
+        playerId, action, commodity, amount, ip: getSocketIp(socket)
+      });
       const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
       const newShip = game.getPlayerShip(db, playerId);
       callback({ ...result, player: newPlayer, ship: newShip });
@@ -418,6 +510,9 @@ io.on('connection', (socket) => {
   socket.on('buyShip', (shipTypeId, callback) => {
     const result = game.buyShip(db, playerId, shipTypeId);
     if (result.success) {
+      logger.security(db, 'SHIP_PURCHASE', `${playerName} purchased ship type ${shipTypeId}`, {
+        playerId, ip: getSocketIp(socket), shipTypeId
+      });
       const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
       const newShip = game.getPlayerShip(db, playerId);
       callback({ ...result, player: newPlayer, ship: newShip });
@@ -429,6 +524,12 @@ io.on('connection', (socket) => {
   // Combat
   socket.on('attack', (defenderId, callback) => {
     const result = game.attackPlayer(db, playerId, defenderId);
+
+    logger.security(db, 'COMBAT', `${playerName} attacked player ${defenderId}: ${result.success ? result.result || 'success' : 'failed'}`, {
+      playerId, ip: getSocketIp(socket), defenderId, success: result.success,
+      result: result.result || null
+    });
+
     const defSocket = playerSockets.get(defenderId);
     if (defSocket && result.success) {
       const defPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(defenderId);
@@ -444,12 +545,22 @@ io.on('connection', (socket) => {
   // Deploy fighters
   socket.on('deployFighters', ({ quantity, mode }, callback) => {
     const result = game.deployFighters(db, playerId, quantity, mode);
+    if (result.success) {
+      logger.info('military', `${playerName} deployed ${quantity} fighters (${mode})`, {
+        playerId, ip: getSocketIp(socket), quantity, mode
+      });
+    }
     callback(result);
   });
 
   // Deploy mines
   socket.on('deployMines', ({ quantity, type }, callback) => {
     const result = game.deployMines(db, playerId, quantity, type);
+    if (result.success) {
+      logger.info('military', `${playerName} deployed ${quantity} mines (${type})`, {
+        playerId, ip: getSocketIp(socket), quantity, mineType: type
+      });
+    }
     callback(result);
   });
 
@@ -511,6 +622,9 @@ io.on('connection', (socket) => {
   socket.on('createCorp', ({ name, tag }, callback) => {
     const result = game.createCorporation(db, playerId, name, tag);
     if (result.success) {
+      logger.security(db, 'CORP_CREATED', `${playerName} created corporation: ${name} [${tag}]`, {
+        playerId, ip: getSocketIp(socket), corpName: name, corpTag: tag
+      });
       const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
       callback({ ...result, player: newPlayer });
     } else {
@@ -544,17 +658,32 @@ io.on('connection', (socket) => {
   });
 
   socket.on('corpDeposit', (amount, callback) => {
-    callback(game.corpDeposit(db, playerId, amount));
+    const result = game.corpDeposit(db, playerId, amount);
+    if (result.success) {
+      logger.security(db, 'CORP_DEPOSIT', `${playerName} deposited ${amount} credits to corp`, {
+        playerId, ip: getSocketIp(socket), amount
+      });
+    }
+    callback(result);
   });
 
   socket.on('corpWithdraw', (amount, callback) => {
-    callback(game.corpWithdraw(db, playerId, amount));
+    const result = game.corpWithdraw(db, playerId, amount);
+    if (result.success) {
+      logger.security(db, 'CORP_WITHDRAW', `${playerName} withdrew ${amount} credits from corp`, {
+        playerId, ip: getSocketIp(socket), amount
+      });
+    }
+    callback(result);
   });
 
   // Market orders
   socket.on('placeMarketOrder', ({ commodity, orderType, quantity, price }, callback) => {
     const result = game.placeMarketOrder(db, playerId, commodity, orderType, quantity, price);
     if (result.success) {
+      logger.info('market', `${playerName} placed ${orderType} order: ${quantity} ${commodity} @ ${price}`, {
+        playerId, ip: getSocketIp(socket), commodity, orderType, quantity, price
+      });
       const newPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
       const newShip = game.getPlayerShip(db, playerId);
       callback({ ...result, player: newPlayer, ship: newShip });
@@ -702,7 +831,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     playerSockets.delete(playerId);
     db.prepare('UPDATE players SET online = 0 WHERE id = ?').run(playerId);
-    console.log(`${playerName} disconnected`);
+    logger.security(db, 'WS_DISCONNECTED', `Player disconnected: ${playerName}`, {
+      userId: socket.user.userId, playerId, ip: getSocketIp(socket), playerName
+    });
   });
 });
 
@@ -735,7 +866,7 @@ setInterval(() => {
       spawnWormholes(db, UNIVERSE_SIZE);
     }
   } catch (err) {
-    console.error('Game tick error:', err);
+    logger.error('game', 'Game tick error', { error: err.message, stack: err.stack });
   }
 }, 60000);
 
@@ -750,11 +881,11 @@ setInterval(() => {
       }
     }
   } catch (err) {
-    console.error('Market tick error:', err);
+    logger.error('market', 'Market tick error', { error: err.message, stack: err.stack });
   }
 }, 30000);
 
 server.listen(PORT, () => {
-  console.log(`Intergalactic Trade Wars running on port ${PORT}`);
+  logger.info('server', `Intergalactic Trade Wars running on port ${PORT}`);
   console.log(`Open http://localhost:${PORT} to play`);
 });
