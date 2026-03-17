@@ -537,6 +537,15 @@ function landPlanet(planetId) {
   });
 }
 
+function refreshPlanetPanel(planetId) {
+  socket.emit('landOnPlanet', planetId, (result) => {
+    if (result.success) {
+      activePlanet = result.planet;
+      showPlanetPanel(result.planet);
+    }
+  });
+}
+
 function showPlanetPanel(planet) {
   const det = document.getElementById('planet-details');
   const isOwner = planet.owner_id === gameState.player.id;
@@ -586,8 +595,8 @@ function showPlanetPanel(planet) {
         <div class="planet-actions" style="margin-top:8px">
           <button onclick="upgradeCitadel(${planet.id}, 'combat_computer')">Upgrade Combat Computer</button>
           <button onclick="upgradeCitadel(${planet.id}, 'quasar_cannon')">Upgrade Quasar Cannon</button>
-          <button onclick="upgradeCitadel(${planet.id}, 'transwarp')">Install Transwarp</button>
-          <button onclick="upgradeCitadel(${planet.id}, 'interdictor')">Install Interdictor</button>
+          ${!planet.has_transwarp ? `<button onclick="upgradeCitadel(${planet.id}, 'transwarp')">Install Transwarp</button>` : ''}
+          ${!planet.has_interdictor ? `<button onclick="upgradeCitadel(${planet.id}, 'interdictor')">Install Interdictor</button>` : ''}
           <button onclick="upgradeCitadel(${planet.id}, 'planetary_shields')">Upgrade Shields</button>
         </div>
       </div>`;
@@ -603,7 +612,7 @@ function claimPlanet(planetId) {
     if (result.success) {
       if (result.player) gameState.player = result.player;
       updateUI();
-      landPlanet(planetId);
+      refreshPlanetPanel(planetId);
     }
   });
 }
@@ -630,7 +639,7 @@ function transferPrompt(planetId, direction) {
         log(result.message, result.success ? 'success' : 'warning');
         if (result.ship) gameState.ship = result.ship;
         updateUI();
-        landPlanet(planetId);
+        refreshPlanetPanel(planetId);
       });
     }}
   ]);
@@ -639,14 +648,14 @@ function transferPrompt(planetId, direction) {
 function buildCitadel(planetId) {
   socket.emit('buildCitadel', planetId, (result) => {
     log(result.message, result.success ? 'success' : 'warning');
-    if (result.success) landPlanet(planetId);
+    if (result.success) refreshPlanetPanel(planetId);
   });
 }
 
 function upgradeCitadel(planetId, module) {
   socket.emit('upgradeCitadel', { planetId, module }, (result) => {
     log(result.message, result.success ? 'success' : 'warning');
-    if (result.success) landPlanet(planetId);
+    if (result.success) refreshPlanetPanel(planetId);
   });
 }
 
