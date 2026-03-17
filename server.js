@@ -274,6 +274,11 @@ io.on('connection', (socket) => {
 
   // Send initial game state
   const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
+  if (!player) {
+    socket.emit('error', { message: 'Player not found. Please log in again.' });
+    socket.disconnect();
+    return;
+  }
   const ship = game.getPlayerShip(db, playerId);
   const sector = game.getSectorInfo(db, player.current_sector, playerId);
 
