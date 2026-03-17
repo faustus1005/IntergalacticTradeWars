@@ -231,6 +231,92 @@ app.put('/api/admin/players/:id', adminMiddleware, (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/admin/players/:id/ship', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const ship = db.prepare(`
+    SELECT s.*, st.name as type_name, st.cargo_capacity, st.fighter_capacity,
+           st.mine_capacity, st.shield_capacity
+    FROM ships s
+    JOIN ship_types st ON st.id = s.type_id
+    WHERE s.player_id = ? AND s.active = 1
+  `).get(id);
+  const shipTypes = db.prepare('SELECT id, name, cargo_capacity, fighter_capacity, mine_capacity, shield_capacity FROM ship_types ORDER BY base_cost ASC').all();
+  res.json({ ship, shipTypes });
+});
+
+app.put('/api/admin/players/:id/ship', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const { type_id, name, ore, organics, equipment, colonists, fighters, mines, shields } = req.body;
+  const ship = db.prepare('SELECT * FROM ships WHERE player_id = ? AND active = 1').get(id);
+  if (!ship) return res.status(404).json({ error: 'No active ship found' });
+  const fields = [];
+  const vals = [];
+  if (type_id !== undefined) {
+    const st = db.prepare('SELECT * FROM ship_types WHERE id = ?').get(parseInt(type_id));
+    if (!st) return res.status(400).json({ error: 'Invalid ship type' });
+    fields.push('type_id = ?'); vals.push(parseInt(type_id));
+    fields.push('max_shields = ?'); vals.push(st.shield_capacity);
+  }
+  if (name !== undefined) { fields.push('name = ?'); vals.push(String(name).slice(0, 50)); }
+  if (ore !== undefined) { fields.push('ore = ?'); vals.push(Math.max(0, parseInt(ore))); }
+  if (organics !== undefined) { fields.push('organics = ?'); vals.push(Math.max(0, parseInt(organics))); }
+  if (equipment !== undefined) { fields.push('equipment = ?'); vals.push(Math.max(0, parseInt(equipment))); }
+  if (colonists !== undefined) { fields.push('colonists = ?'); vals.push(Math.max(0, parseInt(colonists))); }
+  if (fighters !== undefined) { fields.push('fighters = ?'); vals.push(Math.max(0, parseInt(fighters))); }
+  if (mines !== undefined) { fields.push('mines = ?'); vals.push(Math.max(0, parseInt(mines))); }
+  if (shields !== undefined) { fields.push('shields = ?'); vals.push(Math.max(0, parseInt(shields))); }
+  if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
+  vals.push(ship.id);
+  db.prepare(`UPDATE ships SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/players/:id/companions', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const companions = db.prepare(`
+    SELECT c.*, ct.name as type_name, ct.race, ct.personality, ct.hire_cost
+    FROM companions c
+    JOIN companion_types ct ON ct.id = c.companion_type_id
+    WHERE c.player_id = ?
+  `).all(id);
+  const allTypes = db.prepare('SELECT id, name, race, personality, hire_cost FROM companion_types ORDER BY id ASC').all();
+  res.json({ companions, allTypes });
+});
+
+app.post('/api/admin/players/:id/companions', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const { companion_type_id, nickname, affinity, mood } = req.body;
+  const count = db.prepare('SELECT COUNT(*) as c FROM companions WHERE player_id = ?').get(id).c;
+  if (count >= 3) return res.status(400).json({ error: 'Player already has max companions (3)' });
+  const existing = db.prepare('SELECT id FROM companions WHERE player_id = ? AND companion_type_id = ?').get(id, companion_type_id);
+  if (existing) return res.status(400).json({ error: 'Player already has this companion' });
+  db.prepare(`
+    INSERT INTO companions (player_id, companion_type_id, nickname, affinity, mood, hired_at, last_interaction)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).run(id, companion_type_id, nickname || null, Math.max(0, Math.min(100, parseInt(affinity || 50))), Math.max(0, Math.min(100, parseInt(mood || 50))));
+  res.json({ success: true });
+});
+
+app.delete('/api/admin/players/:id/companions/:companionTypeId', adminMiddleware, (req, res) => {
+  const { id, companionTypeId } = req.params;
+  db.prepare('DELETE FROM companions WHERE player_id = ? AND companion_type_id = ?').run(id, companionTypeId);
+  res.json({ success: true });
+});
+
+app.put('/api/admin/players/:id/companions/:companionTypeId', adminMiddleware, (req, res) => {
+  const { id, companionTypeId } = req.params;
+  const { affinity, mood, nickname } = req.body;
+  const fields = [];
+  const vals = [];
+  if (affinity !== undefined) { fields.push('affinity = ?'); vals.push(Math.max(0, Math.min(100, parseInt(affinity)))); }
+  if (mood !== undefined) { fields.push('mood = ?'); vals.push(Math.max(0, Math.min(100, parseInt(mood)))); }
+  if (nickname !== undefined) { fields.push('nickname = ?'); vals.push(nickname ? String(nickname).slice(0, 50) : null); }
+  if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
+  vals.push(id, companionTypeId);
+  db.prepare(`UPDATE companions SET ${fields.join(', ')} WHERE player_id = ? AND companion_type_id = ?`).run(...vals);
+  res.json({ success: true });
+});
+
 app.get('/api/admin/corporations', adminMiddleware, (req, res) => {
   const corps = db.prepare(`
     SELECT c.*, p.name as ceo_name,
