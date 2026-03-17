@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intergalactic Trade Wars</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Login/Register Screen -->
+  <div id="auth-screen" class="screen active">
+    <div class="auth-container">
+      <h1 class="game-title">INTERGALACTIC<br>TRADE WARS</h1>
+      <p class="subtitle">A Galaxy of Profit and Peril</p>
+
+      <div id="login-form" class="auth-form">
+        <h2>Login</h2>
+        <input type="text" id="login-username" placeholder="Username" autocomplete="username">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+        <button onclick="doLogin()">Enter Galaxy</button>
+        <p class="switch-link">New trader? <a href="#" onclick="showRegister()">Register</a></p>
+      </div>
+
+      <div id="register-form" class="auth-form" style="display:none">
+        <h2>Register</h2>
+        <input type="text" id="reg-username" placeholder="Username" autocomplete="username">
+        <input type="password" id="reg-password" placeholder="Password" autocomplete="new-password">
+        <input type="text" id="reg-playername" placeholder="Trader Name">
+        <button onclick="doRegister()">Launch Career</button>
+        <p class="switch-link">Returning trader? <a href="#" onclick="showLogin()">Login</a></p>
+      </div>
+
+      <div id="auth-error" class="error-msg"></div>
+    </div>
+  </div>
+
+  <!-- Main Game Screen -->
+  <div id="game-screen" class="screen">
+    <!-- Top Bar -->
+    <div id="top-bar">
+      <div class="top-section">
+        <span class="player-name" id="player-name"></span>
+        <span class="player-align" id="player-alignment"></span>
+      </div>
+      <div class="top-section">
+        <span class="stat"><i class="icon-credits">$</i> <span id="player-credits">0</span></span>
+        <span class="stat"><i class="icon-turns">⟳</i> <span id="player-turns">0</span> turns</span>
+        <span class="stat"><i class="icon-sector">◈</i> Sector <span id="player-sector">1</span></span>
+      </div>
+      <div class="top-section">
+        <span class="stat ship-name" id="ship-name"></span>
+        <span class="stat">Shields: <span id="ship-shields">0</span></span>
+      </div>
+      <div class="top-section top-nav">
+        <button class="nav-btn active" data-panel="sector">Sector</button>
+        <button class="nav-btn" data-panel="map">Map</button>
+        <button class="nav-btn" data-panel="ship">Ship</button>
+        <button class="nav-btn" data-panel="planet">Planets</button>
+        <button class="nav-btn" data-panel="market">Market</button>
+        <button class="nav-btn" data-panel="skills">Skills</button>
+        <button class="nav-btn" data-panel="corp">Corp</button>
+        <button class="nav-btn" data-panel="comms">Comms</button>
+        <button class="nav-btn" data-panel="rankings">Rankings</button>
+      </div>
+    </div>
+
+    <!-- Content Area -->
+    <div id="content-area">
+      <!-- Sector Panel -->
+      <div id="panel-sector" class="panel active">
+        <div class="panel-grid">
+          <div class="sector-main">
+            <h2>Sector <span id="sector-id">1</span> <span id="sector-beacon" class="beacon"></span></h2>
+            <div id="sector-region" class="region-tag"></div>
+            <div id="sector-nebula" class="nebula-tag" style="display:none">⚡ Nebula - Scanners Disrupted</div>
+            <div id="sector-stardock" class="stardock-tag" style="display:none">★ StarDock - Federation HQ</div>
+
+            <div class="sector-section">
+              <h3>Warp Routes</h3>
+              <div id="warp-links" class="warp-grid"></div>
+            </div>
+
+            <div id="port-section" class="sector-section" style="display:none">
+              <h3>Trading Port: <span id="port-name"></span> <span id="port-class" class="port-class"></span></h3>
+              <table class="trade-table">
+                <thead>
+                  <tr><th>Commodity</th><th>Action</th><th>Qty Avail</th><th>Price</th><th>Amount</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Ore</td>
+                    <td id="port-ore-action">-</td>
+                    <td id="port-ore-qty">0</td>
+                    <td id="port-ore-price">0</td>
+                    <td><input type="number" id="trade-ore-amt" min="0" value="0" class="trade-input"></td>
+                    <td><button onclick="doTrade('ore')">Trade</button></td>
+                  </tr>
+                  <tr>
+                    <td>Organics</td>
+                    <td id="port-org-action">-</td>
+                    <td id="port-org-qty">0</td>
+                    <td id="port-org-price">0</td>
+                    <td><input type="number" id="trade-org-amt" min="0" value="0" class="trade-input"></td>
+                    <td><button onclick="doTrade('organics')">Trade</button></td>
+                  </tr>
+                  <tr>
+                    <td>Equipment</td>
+                    <td id="port-equ-action">-</td>
+                    <td id="port-equ-qty">0</td>
+                    <td id="port-equ-price">0</td>
+                    <td><input type="number" id="trade-equ-amt" min="0" value="0" class="trade-input"></td>
+                    <td><button onclick="doTrade('equipment')">Trade</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div id="planets-section" class="sector-section" style="display:none">
+              <h3>Planets</h3>
+              <div id="planet-list"></div>
+            </div>
+
+            <div id="ships-section" class="sector-section" style="display:none">
+              <h3>Ships in Sector</h3>
+              <div id="ships-list"></div>
+            </div>
+
+            <div id="npcs-section" class="sector-section" style="display:none">
+              <h3>NPCs</h3>
+              <div id="npc-list"></div>
+            </div>
+
+            <div id="fighters-section" class="sector-section" style="display:none">
+              <h3>Deployed Fighters</h3>
+              <div id="fighters-list"></div>
+            </div>
+
+            <div id="mines-section" class="sector-section" style="display:none">
+              <h3>Mine Fields</h3>
+              <div id="mines-list"></div>
+            </div>
+
+            <div id="wormhole-section" class="sector-section" style="display:none">
+              <h3>⚠ Wormhole Detected</h3>
+              <div id="wormhole-info"></div>
+            </div>
+          </div>
+
+          <div class="sector-sidebar">
+            <div class="cargo-display">
+              <h3>Cargo Hold</h3>
+              <div class="cargo-bar">
+                <div class="cargo-fill" id="cargo-fill"></div>
+              </div>
+              <div class="cargo-text" id="cargo-text">0 / 0</div>
+              <div class="cargo-breakdown">
+                <div>Ore: <span id="cargo-ore">0</span></div>
+                <div>Organics: <span id="cargo-org">0</span></div>
+                <div>Equipment: <span id="cargo-equ">0</span></div>
+                <div>Colonists: <span id="cargo-col">0</span></div>
+              </div>
+            </div>
+
+            <div class="sidebar-section">
+              <h3>Ship Armaments</h3>
+              <div>Fighters: <span id="ship-fighters">0</span></div>
+              <div>Mines: <span id="ship-mines">0</span></div>
+            </div>
+
+            <div class="sidebar-section">
+              <h3>Quick Actions</h3>
+              <button onclick="deployFighterPrompt()" class="action-btn">Deploy Fighters</button>
+              <button onclick="deployMinePrompt()" class="action-btn">Deploy Mines</button>
+              <button onclick="collectFighterPrompt()" class="action-btn">Collect Fighters</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Map Panel -->
+      <div id="panel-map" class="panel">
+        <div class="map-controls">
+          <button onclick="mapZoomIn()">+</button>
+          <button onclick="mapZoomOut()">-</button>
+          <button onclick="mapCenter()">Center</button>
+          <label><input type="checkbox" id="map-show-warps" checked> Warps</label>
+          <label><input type="checkbox" id="map-show-ports" checked> Ports</label>
+          <label><input type="checkbox" id="map-show-planets" checked> Planets</label>
+          <label><input type="checkbox" id="map-show-players" checked> Players</label>
+        </div>
+        <canvas id="galaxy-map"></canvas>
+      </div>
+
+      <!-- Ship Panel -->
+      <div id="panel-ship" class="panel">
+        <div class="panel-content">
+          <div id="current-ship-info" class="ship-detail-card">
+            <h2>Current Ship</h2>
+            <div id="current-ship-details"></div>
+          </div>
+          <div id="stardock-ships" style="display:none">
+            <h2>StarDock Shipyard</h2>
+            <p class="info-text">Purchase a new vessel. Your cargo transfers automatically (within capacity).</p>
+            <div id="ship-catalog" class="ship-grid"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Planet Panel -->
+      <div id="panel-planet" class="panel">
+        <div class="panel-content">
+          <h2>Planet Management</h2>
+          <div id="planet-details">
+            <p class="info-text">Land on a planet from the Sector view to manage it.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Market Panel -->
+      <div id="panel-market" class="panel">
+        <div class="panel-content">
+          <h2>Player Market <span class="eve-badge">EVE-Inspired</span></h2>
+          <p class="info-text">Place buy/sell orders. Orders match automatically by best price.</p>
+          <div class="market-controls">
+            <select id="market-commodity">
+              <option value="ore">Ore</option>
+              <option value="organics">Organics</option>
+              <option value="equipment">Equipment</option>
+            </select>
+            <button onclick="refreshMarket()">Refresh</button>
+          </div>
+          <div class="market-grid">
+            <div class="market-col">
+              <h3 class="buy-header">Buy Orders</h3>
+              <div id="market-buy-orders"></div>
+            </div>
+            <div class="market-col">
+              <h3 class="sell-header">Sell Orders</h3>
+              <div id="market-sell-orders"></div>
+            </div>
+          </div>
+          <div class="market-place-order">
+            <h3>Place Order</h3>
+            <div class="order-form">
+              <select id="order-type">
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+              <input type="number" id="order-quantity" placeholder="Quantity" min="1">
+              <input type="number" id="order-price" placeholder="Price per unit" min="1">
+              <button onclick="placeOrder()">Place Order</button>
+            </div>
+          </div>
+          <div>
+            <h3>My Orders</h3>
+            <div id="my-orders"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skills Panel -->
+      <div id="panel-skills" class="panel">
+        <div class="panel-content">
+          <h2>Skill Training <span class="eve-badge">EVE-Inspired</span></h2>
+          <p class="info-text">Skills train passively in real-time, even when offline. Queue up to 3 skills.</p>
+          <div id="skill-queue" class="skill-queue-section">
+            <h3>Training Queue</h3>
+            <div id="skill-queue-list"></div>
+          </div>
+          <div class="skill-categories" id="skill-list"></div>
+        </div>
+      </div>
+
+      <!-- Corp Panel -->
+      <div id="panel-corp" class="panel">
+        <div class="panel-content">
+          <h2>Corporation</h2>
+          <div id="corp-details">
+            <p class="info-text">You are not in a corporation.</p>
+            <div class="corp-actions">
+              <button onclick="showCreateCorp()">Create Corporation</button>
+              <button onclick="showJoinCorp()">Join Corporation</button>
+            </div>
+          </div>
+          <div id="create-corp-form" style="display:none">
+            <h3>Create Corporation</h3>
+            <input type="text" id="corp-name" placeholder="Corporation Name">
+            <input type="text" id="corp-tag" placeholder="Tag (3-5 chars)" maxlength="5">
+            <button onclick="createCorp()">Create (10,000 credits)</button>
+            <button onclick="cancelCreateCorp()">Cancel</button>
+          </div>
+          <div id="join-corp-form" style="display:none">
+            <h3>Join Corporation</h3>
+            <input type="number" id="join-corp-id" placeholder="Corporation ID">
+            <button onclick="joinCorp()">Join</button>
+            <button onclick="cancelJoinCorp()">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Comms Panel -->
+      <div id="panel-comms" class="panel">
+        <div class="panel-content">
+          <h2>SubSpace Communications</h2>
+          <div class="comms-layout">
+            <div class="comms-inbox">
+              <h3>Inbox</h3>
+              <div id="message-list"></div>
+              <button onclick="refreshMessages()">Refresh</button>
+            </div>
+            <div class="comms-compose">
+              <h3>Compose Message</h3>
+              <input type="text" id="msg-to" placeholder="Recipient Name">
+              <input type="text" id="msg-subject" placeholder="Subject">
+              <textarea id="msg-body" placeholder="Message..." rows="4"></textarea>
+              <button onclick="sendMsg()">Send</button>
+            </div>
+            <div class="comms-read" id="msg-reader" style="display:none">
+              <h3 id="msg-read-subject"></h3>
+              <p class="msg-from" id="msg-read-from"></p>
+              <div id="msg-read-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Rankings Panel -->
+      <div id="panel-rankings" class="panel">
+        <div class="panel-content">
+          <h2>Galactic Rankings</h2>
+          <table class="rankings-table" id="rankings-table">
+            <thead>
+              <tr><th>#</th><th>Trader</th><th>Alignment</th><th>Experience</th><th>Credits</th><th>Kills</th><th>Corp</th></tr>
+            </thead>
+            <tbody id="rankings-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game Log -->
+    <div id="game-log">
+      <div id="log-content"></div>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-overlay" style="display:none">
+      <div id="modal">
+        <h3 id="modal-title"></h3>
+        <div id="modal-body"></div>
+        <div id="modal-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/client.js"></script>
+</body>
+</html>
