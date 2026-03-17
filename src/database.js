@@ -13,8 +13,18 @@ function getDb() {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initSchema();
+    runMigrations();
   }
   return db;
+}
+
+function runMigrations() {
+  // Add is_admin column to users if it doesn't exist (migration for existing DBs)
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0');
+  } catch (e) {
+    // Column already exists, ignore
+  }
 }
 
 function initSchema() {
@@ -23,6 +33,7 @@ function initSchema() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
+      is_admin INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -482,4 +493,4 @@ function seedCompanionTypes() {
   insertAll();
 }
 
-module.exports = { getDb, seedShipTypes, seedSkills, seedUpgradeTypes, seedCompanionTypes };
+module.exports = { getDb, seedShipTypes, seedSkills, seedUpgradeTypes, seedCompanionTypes, runMigrations };

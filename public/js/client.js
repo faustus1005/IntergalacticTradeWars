@@ -2,6 +2,7 @@
 
 let socket = null;
 let token = null;
+let isAdmin = false;
 let gameState = { player: null, ship: null, sector: null };
 let mapData = null;
 let mapTransform = { x: 0, y: 0, scale: 1 };
@@ -38,6 +39,7 @@ async function doLogin() {
     const data = await res.json();
     if (!res.ok) return showAuthError(data.error);
     token = data.token;
+    isAdmin = !!data.isAdmin;
     localStorage.setItem('itw_token', token);
     connectSocket();
   } catch (e) {
@@ -60,6 +62,7 @@ async function doRegister() {
     const data = await res.json();
     if (!res.ok) return showAuthError(data.error);
     token = data.token;
+    isAdmin = !!data.isAdmin;
     localStorage.setItem('itw_token', token);
     connectSocket();
   } catch (e) {
@@ -136,10 +139,14 @@ function enterGame() {
       if (panel === 'market') refreshMarket();
       if (panel === 'upgrades') loadUpgradesPanel();
       if (panel === 'quarters') loadQuartersPanel();
+      if (panel === 'admin') loadAdminPanel();
     });
   });
 
   setupMapCanvas();
+  if (isAdmin) {
+    document.getElementById('admin-nav-btn').style.display = '';
+  }
   log('Welcome to Intergalactic Trade Wars, ' + gameState.player.name + '!', 'system');
 }
 
@@ -1711,6 +1718,11 @@ window.addEventListener('DOMContentLoaded', () => {
   const saved = localStorage.getItem('itw_token');
   if (saved) {
     token = saved;
+    // Decode isAdmin from JWT payload (no signature verification needed client-side)
+    try {
+      const payload = JSON.parse(atob(saved.split('.')[1]));
+      isAdmin = !!payload.isAdmin;
+    } catch (e) { /* ignore */ }
     connectSocket();
   }
 
@@ -1722,3 +1734,221 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') doRegister();
   });
 });
+
+// ============ ADMIN PANEL ============
+
+async function adminFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', ...(options.headers || {}) }
+  });
+  return res.json();
+}
+
+function loadAdminPanel() {
+  // Setup admin tab switching
+  document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.admin-tab-content').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.admintab;
+      document.getElementById('admin-tab-' + tab).classList.add('active');
+      if (tab === 'stats') adminLoadStats();
+      if (tab === 'users') adminLoadUsers();
+      if (tab === 'players') adminLoadPlayers();
+      if (tab === 'corps') adminLoadCorps();
+    };
+  });
+  adminLoadStats();
+}
+
+async function adminLoadStats() {
+  const stats = await adminFetch('/api/admin/stats');
+  const grid = document.getElementById('admin-stats-grid');
+  grid.innerHTML = `
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalUsers}</div><div class="admin-stat-label">Total Users</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val" style="color:var(--green)">${stats.onlinePlayers}</div><div class="admin-stat-label">Online Now</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalPlayers}</div><div class="admin-stat-label">Players</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalSectors}</div><div class="admin-stat-label">Sectors</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalPorts}</div><div class="admin-stat-label">Ports</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalPlanets}</div><div class="admin-stat-label">Planets</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalCorps}</div><div class="admin-stat-label">Corporations</div></div>
+    <div class="admin-stat-card"><div class="admin-stat-val">${stats.totalMessages}</div><div class="admin-stat-label">Messages</div></div>
+  `;
+  const combatEl = document.getElementById('admin-combat-log');
+  if (!stats.recentCombat || !stats.recentCombat.length) {
+    combatEl.innerHTML = '<p class="info-text">No recent combat.</p>';
+  } else {
+    combatEl.innerHTML = '<table class="admin-table"><thead><tr><th>Attacker</th><th>Defender</th><th>Result</th><th>Sector</th><th>Time</th></tr></thead><tbody>' +
+      stats.recentCombat.map(c => `<tr><td>${c.attacker_name || '?'}</td><td>${c.defender_name || '?'}</td><td>${c.result || ''}</td><td>${c.sector_id || ''}</td><td>${c.created_at ? c.created_at.slice(0,16) : ''}</td></tr>`).join('') +
+      '</tbody></table>';
+  }
+}
+
+async function adminLoadUsers() {
+  const users = await adminFetch('/api/admin/users');
+  const el = document.getElementById('admin-users-table');
+  el.innerHTML = '<table class="admin-table"><thead><tr><th>ID</th><th>Username</th><th>Player</th><th>Credits</th><th>Online</th><th>Admin</th><th>Joined</th><th>Actions</th></tr></thead><tbody>' +
+    users.map(u => `<tr>
+      <td>${u.id}</td>
+      <td>${escHtml(u.username)}</td>
+      <td>${escHtml(u.player_name || '-')}</td>
+      <td>${u.credits !== null ? formatNumber(u.credits) : '-'}</td>
+      <td>${u.online ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--text-dim)">○</span>'}</td>
+      <td>${u.is_admin ? '<span style="color:var(--yellow)">★ Admin</span>' : 'User'}</td>
+      <td>${u.created_at ? u.created_at.slice(0,10) : ''}</td>
+      <td class="admin-actions">
+        <button onclick="adminEditUser(${u.id}, '${escHtml(u.username)}', ${u.is_admin})" class="btn-small">Edit</button>
+        <button onclick="adminDeleteUser(${u.id}, '${escHtml(u.username)}')" class="btn-small btn-danger">Del</button>
+      </td>
+    </tr>`).join('') +
+    '</tbody></table>';
+}
+
+function adminEditUser(userId, username, currentIsAdmin) {
+  showModal('Edit User: ' + username,
+    `<div class="admin-edit-form">
+      <label>Admin Status:</label>
+      <select id="edit-user-admin">
+        <option value="1" ${currentIsAdmin ? 'selected' : ''}>Admin</option>
+        <option value="0" ${!currentIsAdmin ? 'selected' : ''}>Regular User</option>
+      </select>
+      <label style="margin-top:12px">Reset Password (leave blank to keep):</label>
+      <input type="password" id="edit-user-password" placeholder="New password (min 4 chars)">
+    </div>`,
+    [
+      { text: 'Save', primary: true, action: async () => {
+        const is_admin = document.getElementById('edit-user-admin').value === '1';
+        const password = document.getElementById('edit-user-password').value;
+        const body = { is_admin };
+        if (password) body.password = password;
+        const result = await adminFetch(`/api/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(body) });
+        closeModal();
+        if (result.success) { log('User updated', 'success'); adminLoadUsers(); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminDeleteUser(userId, username) {
+  showModal('Delete User: ' + username,
+    `<p style="color:var(--red)">Permanently delete user <strong>${escHtml(username)}</strong> and all their data?</p>
+     <p class="info-text">This cannot be undone.</p>`,
+    [
+      { text: 'Delete', action: async () => {
+        const result = await adminFetch(`/api/admin/users/${userId}`, { method: 'DELETE' });
+        closeModal();
+        if (result.success) { log('User deleted', 'warning'); adminLoadUsers(); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminLoadPlayers() {
+  const players = await adminFetch('/api/admin/players');
+  const el = document.getElementById('admin-players-table');
+  el.innerHTML = '<table class="admin-table"><thead><tr><th>ID</th><th>Name</th><th>User</th><th>Credits</th><th>Align</th><th>Turns</th><th>Sector</th><th>Ship</th><th>Corp</th><th>Kills</th><th>Online</th><th>Actions</th></tr></thead><tbody>' +
+    players.map(p => `<tr>
+      <td>${p.id}</td>
+      <td>${escHtml(p.name)}</td>
+      <td>${escHtml(p.username || '-')}</td>
+      <td>${formatNumber(p.credits)}</td>
+      <td>${p.alignment}</td>
+      <td>${p.turns_remaining}/${p.max_turns}</td>
+      <td>${p.current_sector}</td>
+      <td>${escHtml(p.ship_type_name || '-')}</td>
+      <td>${escHtml(p.corp_name || '-')}</td>
+      <td>${p.kills}</td>
+      <td>${p.online ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--text-dim)">○</span>'}</td>
+      <td class="admin-actions">
+        <button onclick="adminEditPlayer(${p.id}, '${escHtml(p.name)}')" class="btn-small">Edit</button>
+      </td>
+    </tr>`).join('') +
+    '</tbody></table>';
+}
+
+function adminEditPlayer(playerId, playerName) {
+  showModal('Edit Player: ' + playerName,
+    `<div class="admin-edit-form">
+      <label>Credits:</label>
+      <input type="number" id="ep-credits" min="0">
+      <label>Alignment (-999 to 999):</label>
+      <input type="number" id="ep-alignment" min="-999" max="999">
+      <label>Turns Remaining:</label>
+      <input type="number" id="ep-turns" min="0">
+      <label>Max Turns:</label>
+      <input type="number" id="ep-maxturns" min="1">
+      <label>Teleport to Sector:</label>
+      <input type="number" id="ep-sector" min="1" placeholder="Sector number">
+      <label>Experience:</label>
+      <input type="number" id="ep-xp" min="0">
+    </div>`,
+    [
+      { text: 'Save', primary: true, action: async () => {
+        const body = {};
+        const credits = document.getElementById('ep-credits').value;
+        const alignment = document.getElementById('ep-alignment').value;
+        const turns = document.getElementById('ep-turns').value;
+        const maxturns = document.getElementById('ep-maxturns').value;
+        const sector = document.getElementById('ep-sector').value;
+        const xp = document.getElementById('ep-xp').value;
+        if (credits !== '') body.credits = credits;
+        if (alignment !== '') body.alignment = alignment;
+        if (turns !== '') body.turns_remaining = turns;
+        if (maxturns !== '') body.max_turns = maxturns;
+        if (sector !== '') body.current_sector = sector;
+        if (xp !== '') body.experience = xp;
+        if (!Object.keys(body).length) { closeModal(); return; }
+        const result = await adminFetch(`/api/admin/players/${playerId}`, { method: 'PUT', body: JSON.stringify(body) });
+        closeModal();
+        if (result.success) { log('Player updated', 'success'); adminLoadPlayers(); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+async function adminLoadCorps() {
+  const corps = await adminFetch('/api/admin/corporations');
+  const el = document.getElementById('admin-corps-table');
+  el.innerHTML = '<table class="admin-table"><thead><tr><th>ID</th><th>Name</th><th>Tag</th><th>CEO</th><th>Members</th><th>Treasury</th><th>Created</th><th>Actions</th></tr></thead><tbody>' +
+    corps.map(c => `<tr>
+      <td>${c.id}</td>
+      <td>${escHtml(c.name)}</td>
+      <td>${escHtml(c.tag)}</td>
+      <td>${escHtml(c.ceo_name || '-')}</td>
+      <td>${c.member_count}</td>
+      <td>${formatNumber(c.treasury)}</td>
+      <td>${c.created_at ? c.created_at.slice(0,10) : ''}</td>
+      <td class="admin-actions">
+        <button onclick="adminDeleteCorp(${c.id}, '${escHtml(c.name)}')" class="btn-small btn-danger">Disband</button>
+      </td>
+    </tr>`).join('') +
+    '</tbody></table>';
+}
+
+async function adminDeleteCorp(corpId, corpName) {
+  showModal('Disband Corporation: ' + corpName,
+    `<p style="color:var(--red)">Disband corporation <strong>${escHtml(corpName)}</strong>?</p>
+     <p class="info-text">All members will be removed. Credits are not refunded.</p>`,
+    [
+      { text: 'Disband', action: async () => {
+        const result = await adminFetch(`/api/admin/corporations/${corpId}`, { method: 'DELETE' });
+        closeModal();
+        if (result.success) { log('Corporation disbanded', 'warning'); adminLoadCorps(); }
+        else log('Error: ' + (result.error || 'Unknown error'), 'danger');
+      }},
+      { text: 'Cancel', action: closeModal }
+    ]
+  );
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}

@@ -1279,3 +1279,147 @@ body {
   #top-bar { padding: 4px 8px; gap: 8px; }
   .nav-btn { padding: 3px 6px; font-size: 0.7rem; }
 }
+
+/* === ADMIN PANEL === */
+.admin-badge {
+  background: var(--yellow);
+  color: #000;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: bold;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 16px 0 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-tab-btn {
+  padding: 6px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px 4px 0 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.admin-tab-btn.active {
+  background: var(--bg-panel);
+  border-color: var(--yellow);
+  color: var(--yellow);
+  border-bottom-color: var(--bg-panel);
+}
+
+.admin-tab-content { display: none; }
+.admin-tab-content.active { display: block; }
+
+.admin-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  text-align: center;
+}
+
+.admin-stat-val {
+  font-size: 1.8rem;
+  font-weight: bold;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.admin-stat-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.admin-table th {
+  background: var(--bg-card);
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.admin-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.admin-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+.admin-actions { display: flex; gap: 6px; white-space: nowrap; }
+
+.btn-small {
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btn-small:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn-danger { border-color: var(--red) !important; color: var(--red) !important; }
+.btn-danger:hover { background: rgba(239,68,68,0.1) !important; }
+
+.admin-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-edit-form label {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.admin-edit-form input,
+.admin-edit-form select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-bright);
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.admin-edit-form input:focus,
+.admin-edit-form select:focus {
+  outline: none;
+  border-color: var(--accent);
+}

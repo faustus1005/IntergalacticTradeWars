@@ -49,6 +49,18 @@ function authMiddleware(req, res, next) {
   }
 }
 
+function adminMiddleware(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
 // REST API routes
 app.post('/api/register', (req, res) => {
   const { username, password, playerName } = req.body;
@@ -58,7 +70,10 @@ app.post('/api/register', (req, res) => {
 
   try {
     const hash = bcrypt.hashSync(password, 10);
-    const userResult = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
+    // First registered user becomes admin
+    const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+    const isAdmin = userCount === 0 ? 1 : 0;
+    const userResult = db.prepare('INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)').run(username, hash, isAdmin);
     const userId = userResult.lastInsertRowid;
 
     const playerResult = db.prepare('INSERT INTO players (user_id, name, current_sector) VALUES (?, ?, 1)').run(userId, playerName);
@@ -75,8 +90,8 @@ app.post('/api/register', (req, res) => {
     const initSkills = db.transaction(() => { for (const s of skills) insertSkill.run(playerId, s.id); });
     initSkills();
 
-    const token = jwt.sign({ userId, playerId, playerName }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, playerId, playerName });
+    const token = jwt.sign({ userId, playerId, playerName, isAdmin: isAdmin === 1 }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, playerId, playerName, isAdmin: isAdmin === 1 });
   } catch (err) {
     if (err.message.includes('UNIQUE')) return res.status(400).json({ error: 'Username or player name already taken' });
     res.status(500).json({ error: 'Registration failed' });
@@ -97,13 +112,142 @@ app.post('/api/login', (req, res) => {
 
   db.prepare('UPDATE players SET online = 1, last_login = CURRENT_TIMESTAMP WHERE id = ?').run(player.id);
 
-  const token = jwt.sign({ userId: user.id, playerId: player.id, playerName: player.name }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, playerId: player.id, playerName: player.name });
+  const isAdmin = user.is_admin === 1;
+  const token = jwt.sign({ userId: user.id, playerId: player.id, playerName: player.name, isAdmin }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, playerId: player.id, playerName: player.name, isAdmin });
 });
 
 app.get('/api/leaderboard', (req, res) => {
   const leaders = game.getLeaderboard(db);
   res.json(leaders);
+});
+
+// ============ ADMIN REST API ============
+
+app.get('/api/admin/stats', adminMiddleware, (req, res) => {
+  const stats = {
+    totalUsers: db.prepare('SELECT COUNT(*) as c FROM users').get().c,
+    onlinePlayers: db.prepare('SELECT COUNT(*) as c FROM players WHERE online = 1').get().c,
+    totalPlayers: db.prepare('SELECT COUNT(*) as c FROM players').get().c,
+    totalSectors: db.prepare('SELECT COUNT(*) as c FROM sectors').get().c,
+    totalPorts: db.prepare('SELECT COUNT(*) as c FROM ports').get().c,
+    totalPlanets: db.prepare('SELECT COUNT(*) as c FROM planets').get().c,
+    totalCorps: db.prepare('SELECT COUNT(*) as c FROM corporations').get().c,
+    totalMessages: db.prepare('SELECT COUNT(*) as c FROM messages').get().c,
+    recentCombat: db.prepare('SELECT cl.*, p1.name as attacker_name, p2.name as defender_name FROM combat_log cl LEFT JOIN players p1 ON cl.attacker_id = p1.id LEFT JOIN players p2 ON cl.defender_id = p2.id ORDER BY cl.created_at DESC LIMIT 10').all(),
+  };
+  res.json(stats);
+});
+
+app.get('/api/admin/users', adminMiddleware, (req, res) => {
+  const users = db.prepare(`
+    SELECT u.id, u.username, u.is_admin, u.created_at,
+           p.id as player_id, p.name as player_name, p.credits, p.alignment,
+           p.turns_remaining, p.current_sector, p.online, p.kills, p.deaths, p.experience
+    FROM users u
+    LEFT JOIN players p ON p.user_id = u.id
+    ORDER BY u.id ASC
+  `).all();
+  res.json(users);
+});
+
+app.put('/api/admin/users/:id', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const { is_admin, password } = req.body;
+  // Prevent self-de-admin
+  if (is_admin === false && parseInt(id) === req.user.userId) {
+    return res.status(400).json({ error: 'Cannot remove your own admin status' });
+  }
+  if (is_admin !== undefined) {
+    db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(is_admin ? 1 : 0, id);
+  }
+  if (password) {
+    if (password.length < 4) return res.status(400).json({ error: 'Password min 4 chars' });
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);
+  }
+  res.json({ success: true });
+});
+
+app.delete('/api/admin/users/:id', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  if (parseInt(id) === req.user.userId) {
+    return res.status(400).json({ error: 'Cannot delete your own account' });
+  }
+  const player = db.prepare('SELECT id FROM players WHERE user_id = ?').get(id);
+  if (player) {
+    // Clean up player data
+    db.prepare('DELETE FROM player_skills WHERE player_id = ?').run(player.id);
+    db.prepare('DELETE FROM skill_queue WHERE player_id = ?').run(player.id);
+    db.prepare('DELETE FROM ships WHERE player_id = ?').run(player.id);
+    db.prepare('DELETE FROM companions WHERE player_id = ?').run(player.id);
+    db.prepare('DELETE FROM market_orders WHERE player_id = ?').run(player.id);
+    db.prepare('UPDATE planets SET owner_id = NULL WHERE owner_id = ?').run(player.id);
+    db.prepare('DELETE FROM corp_members WHERE player_id = ?').run(player.id);
+    db.prepare('DELETE FROM messages WHERE from_id = ? OR to_id = ?').run(player.id, player.id);
+    db.prepare('DELETE FROM sector_fighters WHERE owner_id = ?').run(player.id);
+    db.prepare('DELETE FROM sector_mines WHERE owner_id = ?').run(player.id);
+    db.prepare('DELETE FROM players WHERE id = ?').run(player.id);
+  }
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/players', adminMiddleware, (req, res) => {
+  const players = db.prepare(`
+    SELECT p.*, u.username, u.is_admin,
+           s.name as ship_name, st.name as ship_type_name,
+           c.name as corp_name
+    FROM players p
+    LEFT JOIN users u ON u.id = p.user_id
+    LEFT JOIN ships s ON s.player_id = p.id AND s.active = 1
+    LEFT JOIN ship_types st ON st.id = s.type_id
+    LEFT JOIN corporations c ON c.id = p.corp_id
+    ORDER BY p.id ASC
+  `).all();
+  res.json(players);
+});
+
+app.put('/api/admin/players/:id', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  const { credits, alignment, turns_remaining, max_turns, current_sector, experience, kills, deaths } = req.body;
+  const fields = [];
+  const vals = [];
+  if (credits !== undefined) { fields.push('credits = ?'); vals.push(Math.max(0, parseInt(credits))); }
+  if (alignment !== undefined) { fields.push('alignment = ?'); vals.push(Math.max(-999, Math.min(999, parseInt(alignment)))); }
+  if (turns_remaining !== undefined) { fields.push('turns_remaining = ?'); vals.push(Math.max(0, parseInt(turns_remaining))); }
+  if (max_turns !== undefined) { fields.push('max_turns = ?'); vals.push(Math.max(1, parseInt(max_turns))); }
+  if (current_sector !== undefined) {
+    const sector = db.prepare('SELECT id FROM sectors WHERE id = ?').get(parseInt(current_sector));
+    if (!sector) return res.status(400).json({ error: 'Invalid sector' });
+    fields.push('current_sector = ?'); vals.push(parseInt(current_sector));
+  }
+  if (experience !== undefined) { fields.push('experience = ?'); vals.push(Math.max(0, parseInt(experience))); }
+  if (kills !== undefined) { fields.push('kills = ?'); vals.push(Math.max(0, parseInt(kills))); }
+  if (deaths !== undefined) { fields.push('deaths = ?'); vals.push(Math.max(0, parseInt(deaths))); }
+  if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
+  vals.push(id);
+  db.prepare(`UPDATE players SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/corporations', adminMiddleware, (req, res) => {
+  const corps = db.prepare(`
+    SELECT c.*, p.name as ceo_name,
+           (SELECT COUNT(*) FROM corp_members cm WHERE cm.corp_id = c.id) as member_count
+    FROM corporations c
+    LEFT JOIN players p ON p.id = c.ceo_id
+    ORDER BY c.id ASC
+  `).all();
+  res.json(corps);
+});
+
+app.delete('/api/admin/corporations/:id', adminMiddleware, (req, res) => {
+  const { id } = req.params;
+  db.prepare('UPDATE players SET corp_id = NULL WHERE corp_id = ?').run(id);
+  db.prepare('DELETE FROM corp_members WHERE corp_id = ?').run(id);
+  db.prepare('DELETE FROM corporations WHERE id = ?').run(id);
+  res.json({ success: true });
 });
 
 // Socket.IO auth middleware
