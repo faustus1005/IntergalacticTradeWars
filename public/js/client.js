@@ -578,6 +578,7 @@ function showPlanetPanel(planet) {
     html += `<div class="planet-actions"><button onclick="claimPlanet(${planet.id})">Claim Planet (1,000 cr)</button></div>`;
   } else if (isOwner) {
     html += `<div class="planet-actions">
+      <button onclick="renamePlanetPrompt(${planet.id}, '${planet.name.replace(/'/g, "\\'")}')">Rename Planet</button>
       <button onclick="transferPrompt(${planet.id}, 'to')">Transfer to Planet</button>
       <button onclick="transferPrompt(${planet.id}, 'from')">Transfer from Planet</button>
       <button onclick="buildCitadel(${planet.id})">Build/Upgrade Citadel (Lv${planet.citadel_level})</button>
@@ -615,6 +616,27 @@ function claimPlanet(planetId) {
       refreshPlanetPanel(planetId);
     }
   });
+}
+
+function renamePlanetPrompt(planetId, currentName) {
+  showModal('Rename Planet', `
+    <input id="rename-planet-input" type="text" value="${currentName}" maxlength="30"
+      style="padding:6px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:3px;font-family:inherit;width:100%">
+  `, [
+    { text: 'Cancel', action: closeModal },
+    { text: 'Rename', primary: true, action: () => {
+      const name = document.getElementById('rename-planet-input').value.trim();
+      if (!name) return log('Enter a planet name', 'warning');
+      closeModal();
+      socket.emit('renamePlanet', { planetId, name }, (result) => {
+        log(result.message, result.success ? 'success' : 'warning');
+        if (result.success) {
+          refreshPlanetPanel(planetId);
+          refreshSector();
+        }
+      });
+    }}
+  ]);
 }
 
 function transferPrompt(planetId, direction) {
@@ -820,7 +842,7 @@ function loadSkills() {
     skills.forEach(s => {
       if (!categories[s.category]) categories[s.category] = [];
       categories[s.category].push(s);
-      if (s.training_end) queueList.push(s);
+      if (s.training) queueList.push(s);
     });
 
     // Queue
@@ -829,14 +851,14 @@ function loadSkills() {
       qDiv.innerHTML = '<p class="info-text">No skills training. Start training below!</p>';
     } else {
       qDiv.innerHTML = '';
-      queueList.sort((a, b) => new Date(a.training_end) - new Date(b.training_end));
+      queueList.sort((a, b) => new Date(a.training.end) - new Date(b.training.end));
       queueList.forEach(s => {
-        const timeLeft = Math.max(0, new Date(s.training_end) - new Date());
+        const timeLeft = Math.max(0, new Date(s.training.end) - new Date());
         const div = document.createElement('div');
         div.className = 'queue-item';
-        div.innerHTML = `<span>${s.name} → Level ${s.level + 1}</span>
+        div.innerHTML = `<span>${s.name} → Level ${s.currentLevel + 1}</span>
           <span class="time-left">${formatTime(timeLeft)}</span>
-          <button onclick="cancelSkillTraining(${s.skill_id})">Cancel</button>`;
+          <button onclick="cancelSkillTraining(${s.id})">Cancel</button>`;
         qDiv.appendChild(div);
       });
     }
@@ -853,16 +875,16 @@ function loadSkills() {
         item.className = 'skill-item';
         let pips = '';
         for (let i = 0; i < s.max_level; i++) {
-          const cls = i < s.level ? 'filled' : (i === s.level && s.training_end ? 'training' : '');
+          const cls = i < s.currentLevel ? 'filled' : (i === s.currentLevel && s.training ? 'training' : '');
           pips += `<div class="skill-pip ${cls}"></div>`;
         }
-        const canTrain = s.level < s.max_level && !s.training_end;
+        const canTrain = s.currentLevel < s.max_level && !s.training;
         item.innerHTML = `<div>
             <div>${s.name}</div>
             <div style="font-size:0.7rem;color:var(--text-dim)">${s.description}</div>
             <div class="skill-level">${pips}</div>
           </div>
-          <button ${canTrain ? '' : 'disabled'} onclick="trainSkill(${s.skill_id})">${s.training_end ? 'Training...' : s.level >= s.max_level ? 'Maxed' : 'Train'}</button>`;
+          <button ${canTrain ? '' : 'disabled'} onclick="trainSkill(${s.id})">${s.training ? 'Training...' : s.currentLevel >= s.max_level ? 'Maxed' : 'Train'}</button>`;
         catDiv.appendChild(item);
       });
       listDiv.appendChild(catDiv);
@@ -1704,10 +1726,37 @@ function doCompanionInteraction(companionTypeId, action) {
           <div class="interaction-changes">${changeText.join(' ')}</div>
         </div>`;
 
-      // Refresh the meters
-      openCompanionInteraction(companionTypeId);
+      // Refresh the meters without resetting dialogue content
+      refreshCompanionMeters(companionTypeId);
     } else {
       log(result.message, 'warning');
+    }
+  });
+}
+
+function refreshCompanionMeters(companionTypeId) {
+  socket.emit('getQuartersStatus', (status) => {
+    const comp = status.companions.find(c => c.companion_type_id === companionTypeId);
+    if (!comp) return;
+
+    const moodLabel = comp.mood >= 70 ? 'Happy' : comp.mood >= 40 ? 'Content' : 'Melancholy';
+    const moodColor = comp.mood >= 70 ? 'var(--green)' : comp.mood >= 40 ? 'var(--yellow)' : 'var(--red)';
+    const affinityLabel = comp.affinity >= 80 ? 'Devoted' : comp.affinity >= 60 ? 'Friendly' : comp.affinity >= 40 ? 'Neutral' : 'Distant';
+    const affinityColor = comp.affinity >= 80 ? 'var(--accent)' : comp.affinity >= 60 ? 'var(--green)' : comp.affinity >= 40 ? 'var(--yellow)' : 'var(--text-dim)';
+
+    const meters = document.querySelector('#interaction-header .companion-meters');
+    if (meters) {
+      meters.innerHTML = `
+        <div class="meter-row">
+          <span class="meter-label">Mood:</span>
+          <div class="meter-bar"><div class="meter-fill" style="width:${comp.mood}%;background:${moodColor}"></div></div>
+          <span class="meter-text" style="color:${moodColor}">${moodLabel}</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">Bond:</span>
+          <div class="meter-bar"><div class="meter-fill" style="width:${comp.affinity}%;background:${affinityColor}"></div></div>
+          <span class="meter-text" style="color:${affinityColor}">${affinityLabel}</span>
+        </div>`;
     }
   });
 }

@@ -342,7 +342,7 @@ function getSectorInfo(db, sectorId, playerId) {
 
   const warps = db.prepare('SELECT to_sector FROM sector_warps WHERE from_sector = ?').all(sectorId).map(r => r.to_sector);
   const port = db.prepare('SELECT * FROM ports WHERE sector_id = ?').get(sectorId) || null;
-  const planets = db.prepare('SELECT id, name, class, owner_id, citadel_level FROM planets WHERE sector_id = ?').all(sectorId);
+  const planets = db.prepare('SELECT p.id, p.name, p.class, p.owner_id, p.citadel_level, pl.name as owner_name FROM planets p LEFT JOIN players pl ON p.owner_id = pl.id WHERE p.sector_id = ?').all(sectorId);
   const shipsPresent = db.prepare(`SELECT p.id, p.name, p.alignment FROM players p WHERE p.current_sector = ? AND p.id != ? AND p.online = 1`).all(sectorId, playerId);
   const fighters = db.prepare('SELECT sf.*, p.name as owner_name FROM sector_fighters sf JOIN players p ON sf.owner_id = p.id WHERE sf.sector_id = ?').all(sectorId);
   const mines = db.prepare('SELECT sm.*, p.name as owner_name FROM sector_mines sm JOIN players p ON sm.owner_id = p.id WHERE sm.sector_id = ?').all(sectorId);
@@ -617,7 +617,7 @@ function landOnPlanet(db, playerId, planetId) {
   const player = db.prepare('SELECT * FROM players WHERE id = ?').get(playerId);
   if (!player) return { success: false, message: 'Player not found.' };
 
-  const planet = db.prepare('SELECT * FROM planets WHERE id = ?').get(planetId);
+  const planet = db.prepare('SELECT p.*, pl.name as owner_name FROM planets p LEFT JOIN players pl ON p.owner_id = pl.id WHERE p.id = ?').get(planetId);
   if (!planet) return { success: false, message: 'Planet not found.' };
   if (planet.sector_id !== player.current_sector) return { success: false, message: 'Planet is not in your sector.' };
 
@@ -641,6 +641,19 @@ function claimPlanet(db, playerId, planetId) {
   exec();
 
   return { success: true, message: 'Planet claimed!' };
+}
+
+function renamePlanet(db, playerId, planetId, newName) {
+  if (!newName || typeof newName !== 'string') return { success: false, message: 'Invalid name.' };
+  newName = newName.trim();
+  if (newName.length === 0 || newName.length > 30) return { success: false, message: 'Name must be 1-30 characters.' };
+
+  const planet = db.prepare('SELECT * FROM planets WHERE id = ?').get(planetId);
+  if (!planet) return { success: false, message: 'Planet not found.' };
+  if (planet.owner_id !== playerId) return { success: false, message: 'You do not own this planet.' };
+
+  db.prepare('UPDATE planets SET name = ? WHERE id = ?').run(newName, planetId);
+  return { success: true, message: `Planet renamed to ${newName}.` };
 }
 
 function transferToPlanet(db, playerId, planetId, commodity, amount) {
@@ -1673,6 +1686,7 @@ module.exports = {
   // Planets
   landOnPlanet,
   claimPlanet,
+  renamePlanet,
   transferToPlanet,
   transferFromPlanet,
   buildCitadel,
