@@ -590,6 +590,10 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('renamePlanet', ({ planetId, name }, callback) => {
+    callback(game.renamePlanet(db, playerId, planetId, name));
+  });
+
   socket.on('transferToPlanet', ({ planetId, commodity, amount }, callback) => {
     const result = game.transferToPlanet(db, playerId, planetId, commodity, amount);
     if (result.success) {
